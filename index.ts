@@ -1,11 +1,15 @@
 import { Plugin } from "@opencode/plugin"
 import { resolveConfig } from "./src/config.js"
+import { saveConfigFile } from "./src/configfile.js"
 import { startRecording, type Recording } from "./src/recorder.js"
 import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
 /** Arguments to `/voice` that cancel an in-progress recording. */
 const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+
+/** Arguments to `/tts` that immediately stop the current speech. */
+const TTS_STOP_WORDS = new Set([...CANCEL_WORDS, "silence", "silencio", "silêncio", "quiet", "silenciar"])
 
 /**
  * Server half of the voice plugin.
@@ -97,6 +101,23 @@ export default Plugin.define({
           }
           if (recording) await finish()
           else await start(sessionID, prompt as unknown as Record<string, unknown>, delivery)
+        },
+      })
+      editor.add({
+        name: "tts",
+        description: "Toggle speech of agent messages (/tts stop to stop speaking)",
+        execute: async ({ prompt }) => {
+          const raw = String((prompt as { text?: string })?.text ?? "")
+          const arg = raw.trim().toLowerCase().replace(/^\/?tts\b/, "").trim()
+          if (TTS_STOP_WORDS.has(arg)) {
+            stopSpeaking()
+            return
+          }
+          refresh()
+          const next = !cfg.tts
+          saveConfigFile({ tts: next })
+          refresh()
+          if (next) void speak(cfg, "Voz ligada.")
         },
       })
     })

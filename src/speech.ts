@@ -16,6 +16,7 @@ import { node, platform } from "./node.js"
 
 interface SpeechState {
   queue: Promise<unknown>
+  generation: number
   current?: import("node:child_process").ChildProcess
 }
 
@@ -23,7 +24,7 @@ interface SpeechState {
 function state(): SpeechState {
   const g = globalThis as Record<symbol, unknown>
   const key = Symbol.for("opencode.voice.speech.state")
-  if (!g[key]) g[key] = { queue: Promise.resolve() } as SpeechState
+  if (!g[key]) g[key] = { queue: Promise.resolve(), generation: 0 } as SpeechState
   return g[key] as SpeechState
 }
 
@@ -82,13 +83,18 @@ export function speak(cfg: VoiceConfig, raw: string): Promise<void> {
   const text = sanitize(raw, cfg.ttsMaxChars)
   if (!text) return Promise.resolve()
   const st = state()
-  st.queue = st.queue.then(() => utter(cfg, text)).catch(() => {})
+  const generation = st.generation
+  st.queue = st.queue
+    .then(() => (state().generation === generation ? utter(cfg, text) : undefined))
+    .catch(() => {})
   return st.queue as Promise<void>
 }
 
 export function stopSpeaking(): void {
+  const st = state()
+  st.generation++ // drop anything still queued
   try {
-    state().current?.kill("SIGTERM")
+    st.current?.kill("SIGTERM")
   } catch {
     // ignore
   }

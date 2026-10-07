@@ -212,6 +212,14 @@ OPENCODE_VOICE_TTS_VOICE=pt-PT-DuarteNeural      # male European Portuguese
 OPENCODE_VOICE_TTS_VOICE_EN=en-GB-SoniaNeural    # British English
 ```
 
+### TTS commands
+
+- `/tts` — toggle speech on/off. When turning it on it says “Voz ligada.”
+- `/tts stop` (`cancel`, `silence`, `parar` also work) — stop speaking
+  immediately: cuts the current utterance and clears anything queued.
+
+Works from any client, and persists to `~/.config/opencode/voice.json`.
+
 ### Fully offline (Piper, optional)
 
 [Piper](https://github.com/rhasspy/piper) is a small neural TTS that runs

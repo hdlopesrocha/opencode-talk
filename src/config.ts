@@ -59,6 +59,8 @@ export interface VoiceConfig {
 
   /** Show a confirm dialog before sending. */
   confirm: boolean
+  /** Send the transcript automatically instead of copying it to the clipboard. */
+  autosend: boolean
   /** How the prompt is delivered to the session. */
   delivery: Delivery
   /** Text prepended to the transcript. */
@@ -241,10 +243,11 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
     localShell: firstDefined(asString(o.localShell, undefined), platform() === "win32" ? "cmd" : "sh") as string,
 
     keybind,
-    slash: firstDefined(asString(o.slash, undefined), "voice") as string,
+    slash: firstDefined(asString(o.slash, undefined), "mic") as string,
     aliases,
 
     confirm: asBool(o.confirm, false),
+    autosend: asBool(firstDefined(o.autosend, o.autoSend, env("OPENCODE_VOICE_AUTOSEND")), false),
     delivery,
     prefix: firstDefined(asString(o.prefix, undefined), "") as string,
     suffix: firstDefined(asString(o.suffix, undefined), "") as string,

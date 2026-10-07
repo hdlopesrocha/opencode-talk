@@ -3,7 +3,7 @@
 Voice input for [OpenCode](https://opencode.ai). Press a key, speak, and the
 transcript is sent as a prompt to your active session.
 
-- **Toggle recording** with `<leader>v` (default) or the `/voice` slash command.
+- **Toggle recording** with `<leader>v` (default) or the `/mic` slash command.
 - **Local speech-to-text** by default, via a bundled `faster-whisper` engine
   (offline, private, no API key).
 - **Cloud STT** through any OpenAI-compatible `/audio/transcriptions` endpoint
@@ -139,11 +139,13 @@ Override the command binding in `cli.json`:
 
 1. Open a session.
 2. Start recording — press `<leader>v` (by default `Ctrl+X` then `v`), or run
-   `/voice` (`/voice start` also works).
+   `/mic` (`/mic start` also works).
 3. A "Recording…" toast appears. Speak.
-4. Stop & send — press the key again, run `/voice` (it toggles), or
-   `/voice submit`.
-5. To **cancel** (discard, send nothing), run `/voice stop` (`cancel`, `abort`,
+4. Finish — press the key again, run `/mic` (it toggles), or `/mic submit`. By
+   default the transcript is **copied to the clipboard**: paste it (Ctrl+V),
+   edit, and send it yourself. Use `/mic send` to send directly, or enable
+   auto-send with `autosend` (below).
+5. To **cancel** (discard, nothing copied), run `/mic stop` (`cancel`, `abort`,
    `parar` also work).
 
 While recording, **TTS is muted automatically** so the microphone never hears
@@ -153,7 +155,7 @@ Recording also stops automatically after `maxDuration` seconds (default 120).
 
 ### Configuration menu
 
-Run `/voice-setup` (or pick **Voice: configuração** from `Ctrl+P`) to:
+Run `/mic-setup` (or pick **Voice: configuração** from `Ctrl+P`) to:
 
 - switch between **local** transcription (no key needed) and the **cloud API**;
 - set the API key, `baseURL` and model — stored at
@@ -168,18 +170,19 @@ Changes apply immediately — the plugin re-reads `voice.json` on every use.
 
 ### Configuring without the menu (web/desktop)
 
-The `/voice-setup` menu, the `<leader>v` keybind and the toasts are
+The `/mic-setup` menu, the `<leader>v` keybind and the toasts are
 **terminal-only** (web and desktop apps don't load terminal plugins). In those
 clients configure with the server command instead — it works everywhere:
 
 ```text
-/voice-setup tts on|off        # speech on/off
-/voice-setup auto on|off       # pt/en/fr auto-detection
-/voice-setup voice-pt <name>   # e.g. pt-PT-DuarteNeural
-/voice-setup voice-en <name>   # e.g. en-GB-SoniaNeural
-/voice-setup voice-fr <name>   # e.g. fr-FR-HenriNeural
-/voice-setup backend local|api
-/voice-setup key <key>         # store an API key (outside the repo)
+/mic-setup autosend on|off    # send directly vs copy to clipboard
+/mic-setup sound on|off       # speech on/off (alias: tts)
+/mic-setup auto on|off        # pt/en/fr auto-detection
+/mic-setup voice-pt <name>    # e.g. pt-PT-DuarteNeural
+/mic-setup voice-en <name>    # e.g. en-GB-SoniaNeural
+/mic-setup voice-fr <name>    # e.g. fr-FR-HenriNeural
+/mic-setup backend local|api
+/mic-setup key <key>          # store an API key (outside the repo)
 ```
 
 You can also edit `~/.config/opencode/voice.json` directly.
@@ -214,8 +217,9 @@ Configure with environment variables (set them before launching `opencode`, then
 | Variable                       | Default                | Purpose                                                            |
 | ------------------------------ | ---------------------- | ------------------------------------------------------------------ |
 | `OPENCODE_VOICE_TTS`           | `1`                    | Set to `0` to disable speech.                                      |
+| `OPENCODE_VOICE_AUTOSEND`      | `0`                    | `/mic`: send directly instead of copying to the clipboard.         |
 | `OPENCODE_VOICE_TTS_ENGINE`    | auto (`command`)       | `command` (bundled edge-tts), `spd-say`, or your own command.      |
-| `OPENCODE_VOICE_TTS_AUTO`      | `1`                    | Auto-detect Portuguese/English and pick the matching voice.        |
+| `OPENCODE_VOICE_TTS_AUTO`      | `1`                    | Auto-detect pt/en/fr and pick the matching voice.                  |
 | `OPENCODE_VOICE_TTS_VOICE`     | `pt`                   | Portuguese voice: `pt`, `pt-br`, or a full edge voice name.        |
 | `OPENCODE_VOICE_TTS_VOICE_EN`  | `en-US-AriaNeural`     | Voice used for English messages.                                   |
 | `OPENCODE_VOICE_TTS_VOICE_FR`  | `fr-FR-DeniseNeural`   | Voice used for French messages.                                    |
@@ -233,11 +237,11 @@ OPENCODE_VOICE_TTS_VOICE=pt-PT-DuarteNeural      # male European Portuguese
 OPENCODE_VOICE_TTS_VOICE_EN=en-GB-SoniaNeural    # British English
 ```
 
-### TTS commands
+### Sound commands
 
-- `/tts` — toggle speech on/off. When turning it on it says “Voz ligada.”
-- `/tts start` (`on`, `ligar`) — enable speech.
-- `/tts stop` (`off`, `silence`, `calar`, `parar`) — disable speech **and**
+- `/sound` — toggle speech on/off. When turning it on it says “Voz ligada.”
+- `/sound start` (`on`, `ligar`) — enable speech.
+- `/sound stop` (`off`, `silence`, `calar`, `parar`) — disable speech **and**
   stop speaking immediately (cuts the current utterance and clears the queue).
 
 Works from any client, and persists to `~/.config/opencode/voice.json`.
@@ -252,7 +256,7 @@ reads the text on stdin and writes WAV to stdout):
 ```sh
 .venv/bin/python -m pip install piper-tts
 # download a voice, e.g. pt_PT-tugão-medium.onnx (+ .json) into ~/voices
-export OPENCODE_VOICE_TTS_COMMAND="$PWD/.venv/bin/piper -m $HOME/voices/pt_PT-tugao-medium.onnx -f - | paplay"
+export OPENCODE_VOICE_TTS_COMMAND="$PWD/.venv/bin/piper -m $HOME/mics/pt_PT-tugao-medium.onnx -f - | paplay"
 opencode service restart
 ```
 
@@ -277,9 +281,10 @@ environment variables above instead.
 | `localCommand`  | bundled whisper wrapper          | Shell command for the local backend. Tokens: `{audio}`, `{outdir}`, `{out}`.|
 | `localShell`    | `sh` / `cmd`                     | Shell used to run `localCommand`.                                           |
 | `keybind`       | `"<leader>v"`                    | Binding, or `false` to disable the automatic binding.                       |
-| `slash`         | `"voice"`                        | Slash command name, or `""` to disable it. Registered with `arguments: true` so typing `/voice` + Enter runs it. |
+| `slash`         | `"mic"`                          | Slash command name, or `""` to disable it. Registered with `arguments: true` so typing `/mic` + Enter runs it. |
 | `aliases`       | `["stt"]`                        | Slash aliases.                                                              |
 | `confirm`       | `false`                          | Show a dialog to review the text before sending.                            |
+| `autosend`      | `false`                          | Send the transcript directly; when `false` it is copied to the clipboard.   |
 | `delivery`      | `"steer"`                        | `"steer"` to send now, `"queue"` to append behind running work.             |
 | `prefix`        | `""`                             | Text prepended to the transcript.                                           |
 | `suffix`        | `""`                             | Text appended to the transcript.                                            |

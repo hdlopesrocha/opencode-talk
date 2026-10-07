@@ -1,4 +1,5 @@
 import { Plugin } from "@opencode/plugin/tui"
+import { copyToClipboard } from "./clipboard.js"
 import { resolveConfig } from "./config.js"
 import { configFilePath, loadConfigFile, saveConfigFile } from "./configfile.js"
 import { startRecording, type Recording } from "./recorder.js"
@@ -83,7 +84,7 @@ export default Plugin.define({
       }
     }
 
-    async function finish() {
+    async function finish(sendOverride?: boolean) {
       refresh()
       const active = recording
       if (!active) return
@@ -117,6 +118,17 @@ export default Plugin.define({
             .map((part) => part.trim())
             .filter(Boolean)
             .join(" ")
+
+          const shouldSend = sendOverride ?? cfg.autosend
+          if (!shouldSend) {
+            const ok = await copyToClipboard(finalText)
+            toast(
+              ok ? "Transcrito copiado — cola (Ctrl+V), edita e envia" : "Transcrito pronto (não foi possível copiar)",
+              ok ? "success" : "warning",
+              6000,
+            )
+            return
+          }
 
           if (!sessionID) {
             await context.ui.dialog.alert({ title: "Voice transcript", message: finalText })
@@ -273,7 +285,8 @@ export default Plugin.define({
     }
 
     const cancelWords = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
-    const submitWords = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
+    const submitWords = new Set(["submit", "finalize", "finalizar", "terminar", "concluir", "copy", "copiar"])
+    const sendWords = new Set(["send", "enviar", "submeter"])
     const startWords = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 
     async function cancelRecording() {
@@ -296,7 +309,12 @@ export default Plugin.define({
         return
       }
       if (submitWords.has(arg)) {
-        if (recording) void finish()
+        if (recording) void finish(false)
+        else toast("Nada a gravar", "warning", 2000)
+        return
+      }
+      if (sendWords.has(arg)) {
+        if (recording) void finish(true)
         else toast("Nada a gravar", "warning", 2000)
         return
       }
@@ -319,7 +337,7 @@ export default Plugin.define({
         {
           id: "voice.input.toggle",
           title: "Voice input",
-          description: "Voice input: /voice toggles; /voice start, /voice submit, /voice stop",
+          description: "Voice input: /mic toggles; /mic start, /mic submit, /mic send, /mic stop",
           group: "Voice",
           bind: cfg.keybind === false ? false : cfg.keybind,
           palette: true,
@@ -337,7 +355,7 @@ export default Plugin.define({
           group: "Voice",
           bind: false,
           palette: true,
-          slash: { name: "voice-setup", aliases: ["voice-config"] },
+          slash: { name: "mic-setup", aliases: ["voice-setup", "voice-config"] },
           run: () => {
             void configure()
           },

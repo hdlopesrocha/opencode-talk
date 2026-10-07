@@ -43,7 +43,7 @@ await plugin.setup(context)
 check("one keymap layer registered", layers.length === 1, layers.length)
 check("command id", layers[0]?.commands?.[0]?.id === "voice.input.toggle")
 check("default binding", layers[0]?.commands?.[0]?.bind === "<leader>v")
-check("slash command", layers[0]?.commands?.[0]?.slash?.name === "voice")
+check("slash command", layers[0]?.commands?.[0]?.slash?.name === "mic")
 check("slash command parses on submit", layers[0]?.commands?.[0]?.slash?.arguments === true)
 
 // 2. Config resolution.

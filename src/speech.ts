@@ -14,8 +14,18 @@ import { node, platform } from "./node.js"
  * Portuguese voice is used accordingly.
  */
 
-let chain: Promise<unknown> = Promise.resolve()
-let current: import("node:child_process").ChildProcess | undefined
+interface SpeechState {
+  queue: Promise<unknown>
+  current?: import("node:child_process").ChildProcess
+}
+
+/** One queue per process, shared by every plugin instance (globalThis). */
+function state(): SpeechState {
+  const g = globalThis as Record<symbol, unknown>
+  const key = Symbol.for("opencode.voice.speech.state")
+  if (!g[key]) g[key] = { queue: Promise.resolve() } as SpeechState
+  return g[key] as SpeechState
+}
 
 const EN_WORDS = new Set([
   "the", "and", "you", "your", "yours", "this", "that", "these", "those", "with", "without",
@@ -71,15 +81,89 @@ export function speak(cfg: VoiceConfig, raw: string): Promise<void> {
   if (!cfg.tts) return Promise.resolve()
   const text = sanitize(raw, cfg.ttsMaxChars)
   if (!text) return Promise.resolve()
-  chain = chain.then(() => utter(cfg, text)).catch(() => {})
-  return chain as Promise<void>
+  const st = state()
+  st.queue = st.queue.then(() => utter(cfg, text)).catch(() => {})
+  return st.queue as Promise<void>
 }
 
 export function stopSpeaking(): void {
   try {
-    current?.kill("SIGTERM")
+    state().current?.kill("SIGTERM")
   } catch {
     // ignore
+  }
+}
+
+/**
+ * Cross-process coordination so that, when several OpenCode servers share this
+ * machine, only ONE of them speaks. The owner is stored as a PID in a temp file;
+ * if the recorded owner is gone, another process takes over.
+ */
+let ownerConfirmed = false
+
+export async function isSpeakerOwner(): Promise<boolean> {
+  if (ownerConfirmed) return true
+  const { fs, os, path } = await node()
+  const proc = (globalThis as {
+    process?: { pid?: number; kill?: (pid: number, signal?: number) => boolean }
+  }).process
+  const pid = proc?.pid ?? 0
+  if (!pid) return true
+
+  const file = path.join(os.tmpdir(), "opencode-voice.speaker")
+  const alive = (value: number): boolean => {
+    try {
+      proc?.kill?.(value, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  let owner = 0
+  try {
+    owner = Number((await fs.readFile(file, "utf8")).trim())
+  } catch {
+    // no owner yet
+  }
+  if (owner === pid) {
+    ownerConfirmed = true
+    return true
+  }
+  if (owner && alive(owner)) return false
+
+  try {
+    await fs.writeFile(file, String(pid))
+  } catch {
+    return false
+  }
+  try {
+    if (Number((await fs.readFile(file, "utf8")).trim()) === pid) {
+      ownerConfirmed = true
+      return true
+    }
+  } catch {
+    // fall through
+  }
+  return false
+}
+
+/** Cross-process, per-message dedupe: the first process to claim a key speaks. */
+export async function claimOnce(key: string): Promise<boolean> {
+  const { fs, os, path } = await node()
+  const dir = path.join(os.tmpdir(), "opencode-voice.spoken")
+  try {
+    await fs.mkdir(dir, { recursive: true })
+  } catch {
+    // ignore
+  }
+  const file = path.join(dir, key.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 150))
+  try {
+    const handle = await fs.open(file, "wx")
+    await handle.close()
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -124,10 +208,11 @@ async function spdSay(
   if (lang) args.push("-l", lang)
   if (cfg.ttsRate) args.push("-r", String(cfg.ttsRate))
   args.push("-e") // read the text from stdin
-  current = cp.spawn("spd-say", args, { stdio: ["pipe", "ignore", "ignore"] })
-  current.stdin?.end(text)
-  await waitExit(current)
-  current = undefined
+  const st = state()
+  st.current = cp.spawn("spd-say", args, { stdio: ["pipe", "ignore", "ignore"] })
+  st.current.stdin?.end(text)
+  await waitExit(st.current)
+  st.current = undefined
 }
 
 async function runCommand(
@@ -140,10 +225,11 @@ async function runCommand(
   const args = platform() === "win32" ? ["/d", "/s", "/c", command] : ["-c", command]
   const baseEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
   const env = voice ? { ...baseEnv, OPENCODE_VOICE_EDGE_VOICE: voice } : baseEnv
-  current = cp.spawn(cfg.ttsShell, args, { stdio: ["pipe", "ignore", "ignore"], env })
-  current.stdin?.end(text)
-  await waitExit(current)
-  current = undefined
+  const st = state()
+  st.current = cp.spawn(cfg.ttsShell, args, { stdio: ["pipe", "ignore", "ignore"], env })
+  st.current.stdin?.end(text)
+  await waitExit(st.current)
+  st.current = undefined
 }
 
 function waitExit(child: import("node:child_process").ChildProcess): Promise<void> {

@@ -1,7 +1,7 @@
 import { Plugin } from "@opencode/plugin"
 import { resolveConfig } from "./src/config.js"
 import { startRecording, type Recording } from "./src/recorder.js"
-import { speak, stopSpeaking } from "./src/speech.js"
+import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
 /**
@@ -107,6 +107,11 @@ export default Plugin.define({
         } catch {
           continue
         }
+
+        // Only one server process on this machine speaks; and each message once.
+        if (!(await isSpeakerOwner())) continue
+        if (!(await claimOnce(key))) continue
+
         refresh()
         void speak(cfg, text)
       }

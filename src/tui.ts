@@ -5,7 +5,7 @@ import { startRecording, type Recording } from "./recorder.js"
 import { transcribe } from "./transcribe.js"
 
 /** Curated edge-tts voices offered in the settings menu. */
-const LANG_VOICES: { title: string; value: string; slot: "pt" | "en"; category: string }[] = [
+const LANG_VOICES: { title: string; value: string; slot: "pt" | "en" | "fr"; category: string }[] = [
   { title: "Português (PT) — Raquel", value: "pt-PT-RaquelNeural", slot: "pt", category: "Português" },
   { title: "Português (PT) — Duarte (masculino)", value: "pt-PT-DuarteNeural", slot: "pt", category: "Português" },
   { title: "Português (BR) — Francisca", value: "pt-BR-FranciscaNeural", slot: "pt", category: "Português" },
@@ -14,6 +14,8 @@ const LANG_VOICES: { title: string; value: string; slot: "pt" | "en"; category: 
   { title: "English (US) — Guy (male)", value: "en-US-GuyNeural", slot: "en", category: "English" },
   { title: "English (UK) — Sonia", value: "en-GB-SoniaNeural", slot: "en", category: "English" },
   { title: "English (UK) — Ryan (male)", value: "en-GB-RyanNeural", slot: "en", category: "English" },
+  { title: "Français — Denise", value: "fr-FR-DeniseNeural", slot: "fr", category: "Français" },
+  { title: "Français — Henri (homme)", value: "fr-FR-HenriNeural", slot: "fr", category: "Français" },
 ]
 
 const AVAILABLE_LANGUAGES = [
@@ -22,7 +24,7 @@ const AVAILABLE_LANGUAGES = [
   "English (US)          en      → en-US-AriaNeural · en-US-GuyNeural",
   "English (UK)          en-gb   → en-GB-SoniaNeural · en-GB-RyanNeural",
   "Español               es      → es-ES-ElviraNeural",
-  "Français              fr      → fr-FR-DeniseNeural",
+  "Français              fr      → fr-FR-DeniseNeural · fr-FR-HenriNeural",
   "Deutsch               de      → de-DE-KatjaNeural",
   "Italiano              it      → it-IT-ElsaNeural",
 ].join("\n")
@@ -171,6 +173,7 @@ export default Plugin.define({
           { title: "Escolher voz (lista de línguas)", value: "tts-list" },
           { title: "Voz do TTS (português) — texto livre", value: "tts" },
           { title: "Voz do TTS (inglês) — texto livre", value: "tts-en" },
+          { title: "Voz do TTS (francês) — texto livre", value: "tts-fr" },
           { title: "Línguas/vozes disponíveis (mostrar)", value: "langs" },
           { title: "Deteção automática de idioma (pt/en)", value: "tts-auto" },
           { title: cfg.tts ? "Desligar TTS" : "Ligar TTS", value: "tts-toggle" },
@@ -220,6 +223,16 @@ export default Plugin.define({
         saveConfigFile({ ttsVoiceEn: voice.trim() || "en-US-AriaNeural" })
         refresh()
         toast(`Voz EN: ${voice.trim() || "en-US-AriaNeural"}`, "success")
+      } else if (choice === "tts-fr") {
+        const voice = await context.ui.dialog.prompt({
+          title: "Voz do TTS (francês)",
+          description: "Voz edge para francês (ex.: fr-FR-DeniseNeural, fr-FR-HenriNeural)",
+          value: String(cfg.ttsVoiceFr ?? "fr-FR-DeniseNeural"),
+        })
+        if (voice === undefined) return
+        saveConfigFile({ ttsVoiceFr: voice.trim() || "fr-FR-DeniseNeural" })
+        refresh()
+        toast(`Voz FR: ${voice.trim() || "fr-FR-DeniseNeural"}`, "success")
       } else if (choice === "tts-list") {
         const picked = await context.ui.dialog.select({
           title: "Escolher voz",
@@ -229,6 +242,7 @@ export default Plugin.define({
         const entry = LANG_VOICES.find((v) => v.value === picked)
         if (!entry) return
         if (entry.slot === "en") saveConfigFile({ ttsVoiceEn: entry.value })
+        else if (entry.slot === "fr") saveConfigFile({ ttsVoiceFr: entry.value })
         else saveConfigFile({ ttsVoice: entry.value })
         refresh()
         toast(`Voz: ${picked}`, "success")

@@ -156,7 +156,7 @@ Run `/voice-setup` (or pick **Voice: configuração** from `Ctrl+P`) to:
 - set the API key, `baseURL` and model — stored at
   `~/.config/opencode/voice.json` (mode `0600`, **outside this repository**, so
   it is never committed);
-- choose the Portuguese and English TTS voices and toggle language
+- choose the Portuguese, English and French TTS voices and toggle language
   auto-detection;
 - enable/disable speech;
 - review the current settings (the key is shown masked).
@@ -178,11 +178,10 @@ natural and include European Portuguese (`pt-PT-RaquelNeural`) and English
 `scripts/edge_tts_play.py`; if synthesis or playback ever fails it falls back to
 `spd-say`.
 
-**Language auto-detection:** each message is classified as Portuguese or English
-and the matching voice is used, so English replies are read with an English voice
-and Portuguese with a Portuguese one. Set `OPENCODE_VOICE_TTS_AUTO=0` to disable
-it, or set an explicit edge voice name in `OPENCODE_VOICE_TTS_VOICE` to force one
-voice for everything.
+**Language auto-detection:** each message is classified as Portuguese, English or
+French and the matching voice is used, so replies are read with the right voice.
+Set `OPENCODE_VOICE_TTS_AUTO=0` to disable it (then everything uses
+`OPENCODE_VOICE_TTS_VOICE`).
 
 Because edge-tts uses an online service, it needs internet at speak time. For a
 completely offline voice, use Piper (below), or force the robotic fallback with
@@ -198,6 +197,7 @@ Configure with environment variables (set them before launching `opencode`, then
 | `OPENCODE_VOICE_TTS_AUTO`      | `1`                    | Auto-detect Portuguese/English and pick the matching voice.        |
 | `OPENCODE_VOICE_TTS_VOICE`     | `pt`                   | Portuguese voice: `pt`, `pt-br`, or a full edge voice name.        |
 | `OPENCODE_VOICE_TTS_VOICE_EN`  | `en-US-AriaNeural`     | Voice used for English messages.                                   |
+| `OPENCODE_VOICE_TTS_VOICE_FR`  | `fr-FR-DeniseNeural`   | Voice used for French messages.                                    |
 | `OPENCODE_VOICE_TTS_RATE`      | `0`                    | `-100`..`100` (positive is faster).                                |
 | `OPENCODE_VOICE_TTS_MAX`       | `1500`                 | Max characters spoken per message (`0` = no limit).                |
 | `OPENCODE_VOICE_TTS_COMMAND`   | bundled edge wrapper   | Command for `engine=command`; the text is written to its stdin.    |
@@ -205,7 +205,7 @@ Configure with environment variables (set them before launching `opencode`, then
 
 Voice mapping: `pt` → `pt-PT-RaquelNeural`, `pt-br` → `pt-BR-FranciscaNeural`,
 `en` → `en-US-AriaNeural`, `en-gb` → `en-GB-SoniaNeural`,
-`es` → `es-ES-ElviraNeural`, and so on. Examples:
+`fr` → `fr-FR-DeniseNeural`, `es` → `es-ES-ElviraNeural`, and so on. Examples:
 
 ```sh
 OPENCODE_VOICE_TTS_VOICE=pt-PT-DuarteNeural      # male European Portuguese

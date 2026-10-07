@@ -48,34 +48,48 @@ const PT_WORDS = new Set([
   "tenho", "pode", "podem", "quero", "preciso", "voz", "texto", "mensagem", "mensagens",
 ])
 
+const FR_WORDS = new Set([
+  "le", "la", "les", "un", "une", "des", "est", "et", "vous", "nous", "avec", "pour", "dans",
+  "sur", "pas", "qui", "je", "tu", "il", "elle", "sont", "être", "etre", "avoir", "faire",
+  "peut", "tout", "bien", "très", "tres", "aussi", "oui", "non", "bonjour", "merci", "au",
+  "aux", "du", "ce", "cette", "ces", "mais", "donc", "car", "ne", "plus", "sans", "sous",
+  "entre", "comme", "votre", "notre", "leur", "mon", "ton", "son", "ils", "elles", "voilà",
+  "voila", "alors", "toujours", "jamais", "encore", "déjà", "deja", "quelque", "chose",
+  "fait", "faites", "voulez", "peux", "dois", "voici", "d'accord", "c'est", "qu'il",
+])
+
+export type DetectedLanguage = "pt" | "en" | "fr"
+
 /** Very small heuristic: which language does this text look like? */
-export function detectLanguage(text: string): "pt" | "en" | undefined {
+export function detectLanguage(text: string): DetectedLanguage | undefined {
   const lower = text.toLowerCase()
-  const words = lower.match(/[a-zà-ÿ]+/g) ?? []
+  const words = lower.match(/[a-zà-ÿ']+/g) ?? []
   let pt = 0
   let en = 0
+  let fr = 0
   for (const word of words) {
     if (PT_WORDS.has(word)) pt++
     if (EN_WORDS.has(word)) en++
+    if (FR_WORDS.has(word)) fr++
   }
-  // Portuguese-specific letters are a strong signal.
-  if (/[ãõçáéíóúâêôà]/.test(lower)) pt += 2
-  if (pt === 0 && en === 0) return undefined
-  return pt >= en ? "pt" : "en"
+  // Distinctive letters.
+  if (/[ãõ]/.test(lower)) pt += 2
+  if (/[œëï]/.test(lower)) fr += 2
+  if (/[áéíóúâêôà]/.test(lower)) pt += 1
+
+  if (fr > pt && fr >= en) return "fr"
+  if (en > pt && en >= fr) return "en"
+  return "pt"
 }
 
 function pickVoice(cfg: VoiceConfig, text: string): { voice?: string; lang?: string } {
-  // An explicit edge voice name disables auto-selection.
-  if (cfg.ttsVoice && cfg.ttsVoice.toLowerCase().endsWith("neural")) {
-    return { voice: cfg.ttsVoice }
-  }
   if (!cfg.ttsAuto) {
     return { voice: cfg.ttsVoice, lang: cfg.ttsVoice }
   }
-  const lang = detectLanguage(text)
-  if (lang === "en") return { voice: cfg.ttsVoiceEn, lang: "en" }
-  if (lang === "pt") return { voice: cfg.ttsVoice, lang: "pt" }
-  return { voice: cfg.ttsVoice, lang: cfg.ttsVoice }
+  const lang = detectLanguage(text) ?? "pt"
+  if (lang === "en") return { voice: cfg.ttsVoiceEn, lang }
+  if (lang === "fr") return { voice: cfg.ttsVoiceFr, lang }
+  return { voice: cfg.ttsVoice, lang: "pt" }
 }
 
 export function speak(cfg: VoiceConfig, raw: string): Promise<void> {

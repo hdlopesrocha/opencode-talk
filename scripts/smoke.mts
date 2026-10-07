@@ -68,6 +68,7 @@ check("sanitize keeps link label", sanitize("[label](http://example.com)", 0) ==
 check("sanitize strips heading markers", sanitize("## Title", 0) === "Title")
 check("detect language pt", detectLanguage("Olá, isto é um teste em português.") === "pt")
 check("detect language en", detectLanguage("Hello, this is a test in English.") === "en")
+check("detect language fr", detectLanguage("Bonjour, ceci est un test en français avec vous.") === "fr")
 
 // 4. Transcription against a mock OpenAI-compatible endpoint.
 let auth = ""

@@ -96,6 +96,8 @@ export interface VoiceConfig {
   ttsAuto: boolean
   /** Voice for English messages (edge voice name, e.g. en-US-AriaNeural). */
   ttsVoiceEn: string
+  /** Voice for French messages (edge voice name, e.g. fr-FR-DeniseNeural). */
+  ttsVoiceFr: string
   /** Command for engine="command"; the text is written to its stdin. */
   ttsCommand?: string
   /** Shell used for ttsCommand. */
@@ -274,6 +276,11 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
       asString(o.ttsVoiceEn, undefined),
       env("OPENCODE_VOICE_TTS_VOICE_EN"),
       "en-US-AriaNeural",
+    ) as string,
+    ttsVoiceFr: firstDefined(
+      asString(o.ttsVoiceFr, undefined),
+      env("OPENCODE_VOICE_TTS_VOICE_FR"),
+      "fr-FR-DeniseNeural",
     ) as string,
     ttsCommand,
     ttsShell: firstDefined(asString(o.ttsShell, undefined), platform() === "win32" ? "cmd" : "sh") as string,

@@ -21,7 +21,7 @@ Voice input and speech output for [OpenCode](https://opencode.ai).
 | `/mic start`                | Start recording                                           |
 | `/mic submit`               | Stop, transcribe, and **copy the text** to the clipboard  |
 | `/mic send`                 | Stop, transcribe, and **send** it as a prompt             |
-| `/mic stop`                 | Cancel the recording (discard)                            |
+| `/mic abort`                 | Cancel the recording (discard)                            |
 | `/sound`                    | Toggle the agent's speech on/off                          |
 | `/sound start` / `/sound stop` | Enable / disable speech                                |
 | `/mic-setup ...`            | Configure from any client (see below)                     |
@@ -174,8 +174,8 @@ Override the command binding in `cli.json`:
    default the transcript is **copied to the clipboard**: paste it (Ctrl+V),
    edit, and send it yourself. Use `/mic send` to send directly, or enable
    auto-send with `autosend` (below).
-5. To **cancel** (discard, nothing copied), run `/mic stop` (`cancel`, `abort`,
-   `parar` also work).
+5. To **cancel** (discard, nothing copied), run `/mic abort` (`cancel`, `parar`
+   also work).
 
 While recording, **TTS is muted automatically** so the microphone never hears
 the agent's own voice.

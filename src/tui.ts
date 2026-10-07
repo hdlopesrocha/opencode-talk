@@ -289,7 +289,7 @@ export default Plugin.define({
       }
     }
 
-    const cancelWords = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+    const cancelWords = new Set(["abort", "cancel", "cancelar", "cancela", "parar", "para"])
     const submitWords = new Set(["submit", "finalize", "finalizar", "terminar", "concluir", "copy", "copiar"])
     const sendWords = new Set(["send", "enviar", "submeter"])
     const startWords = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
@@ -342,7 +342,7 @@ export default Plugin.define({
         {
           id: "voice.input.toggle",
           title: "Voice input",
-          description: "Voice input: /mic toggles; /mic start, /mic submit, /mic send, /mic stop",
+          description: "Voice input: /mic toggles; /mic start, /mic submit, /mic send, /mic abort",
           group: "Voice",
           bind: cfg.keybind === false ? false : cfg.keybind,
           palette: true,

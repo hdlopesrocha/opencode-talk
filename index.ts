@@ -7,7 +7,7 @@ import { claimOnce, isSpeakerOwner, setMuted, speak, stopSpeaking } from "./src/
 import { transcribe } from "./src/transcribe.js"
 
 /** `/mic <arg>` subcommands. */
-const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+const ABORT_WORDS = new Set(["abort", "cancel", "cancelar", "cancela", "parar", "para"])
 const SUBMIT_WORDS = new Set(["submit", "finalize", "finalizar", "terminar", "concluir", "copy", "copiar"])
 const SEND_WORDS = new Set(["send", "enviar", "submeter"])
 const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
@@ -15,7 +15,13 @@ const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar",
 /** `/sound <arg>` subcommands. */
 const SOUND_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
 const SOUND_OFF_WORDS = new Set([
-  ...CANCEL_WORDS,
+  "stop",
+  "abort",
+  "cancel",
+  "cancelar",
+  "cancela",
+  "parar",
+  "para",
   "off",
   "desligar",
   "desliga",
@@ -125,11 +131,11 @@ export default Plugin.define({
       editor.add({
         name: "mic",
         description:
-          "Voice input. `/mic` toggles; `/mic start` records; `/mic submit` stops & copies the text (edit + send); `/mic send` stops & sends; `/mic stop` cancels",
+          "Voice input. `/mic` toggles; `/mic start` records; `/mic submit` stops & copies the text (edit + send); `/mic send` stops & sends; `/mic abort` cancels",
         execute: async ({ sessionID, prompt, delivery }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?mic\b/, "").trim()
-          if (CANCEL_WORDS.has(arg)) {
+          if (ABORT_WORDS.has(arg)) {
             if (recording) await cancel()
             return
           }

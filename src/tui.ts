@@ -4,6 +4,29 @@ import { configFilePath, loadConfigFile, saveConfigFile } from "./configfile.js"
 import { startRecording, type Recording } from "./recorder.js"
 import { transcribe } from "./transcribe.js"
 
+/** Curated edge-tts voices offered in the settings menu. */
+const LANG_VOICES: { title: string; value: string; slot: "pt" | "en"; category: string }[] = [
+  { title: "Português (PT) — Raquel", value: "pt-PT-RaquelNeural", slot: "pt", category: "Português" },
+  { title: "Português (PT) — Duarte (masculino)", value: "pt-PT-DuarteNeural", slot: "pt", category: "Português" },
+  { title: "Português (BR) — Francisca", value: "pt-BR-FranciscaNeural", slot: "pt", category: "Português" },
+  { title: "Português (BR) — António (masculino)", value: "pt-BR-AntonioNeural", slot: "pt", category: "Português" },
+  { title: "English (US) — Aria", value: "en-US-AriaNeural", slot: "en", category: "English" },
+  { title: "English (US) — Guy (male)", value: "en-US-GuyNeural", slot: "en", category: "English" },
+  { title: "English (UK) — Sonia", value: "en-GB-SoniaNeural", slot: "en", category: "English" },
+  { title: "English (UK) — Ryan (male)", value: "en-GB-RyanNeural", slot: "en", category: "English" },
+]
+
+const AVAILABLE_LANGUAGES = [
+  "Português (Portugal)  pt      → pt-PT-RaquelNeural · pt-PT-DuarteNeural",
+  "Português (Brasil)    pt-br   → pt-BR-FranciscaNeural · pt-BR-AntonioNeural",
+  "English (US)          en      → en-US-AriaNeural · en-US-GuyNeural",
+  "English (UK)          en-gb   → en-GB-SoniaNeural · en-GB-RyanNeural",
+  "Español               es      → es-ES-ElviraNeural",
+  "Français              fr      → fr-FR-DeniseNeural",
+  "Deutsch               de      → de-DE-KatjaNeural",
+  "Italiano              it      → it-IT-ElsaNeural",
+].join("\n")
+
 /**
  * Voice input for OpenCode.
  *
@@ -145,10 +168,12 @@ export default Plugin.define({
         options: [
           { title: "Transcrição local (faster-whisper, sem chave)", value: "local" },
           { title: "Transcrição via API — definir chave", value: "api" },
-          { title: "Voz do TTS (português)", value: "tts" },
-          { title: "Voz do TTS (inglês)", value: "tts-en" },
+          { title: "Escolher voz (lista de línguas)", value: "tts-list" },
+          { title: "Voz do TTS (português) — texto livre", value: "tts" },
+          { title: "Voz do TTS (inglês) — texto livre", value: "tts-en" },
+          { title: "Línguas/vozes disponíveis (mostrar)", value: "langs" },
           { title: "Deteção automática de idioma (pt/en)", value: "tts-auto" },
-          { title: "Ligar/desligar TTS", value: "tts-toggle" },
+          { title: cfg.tts ? "Desligar TTS" : "Ligar TTS", value: "tts-toggle" },
           { title: "Mostrar configuração atual", value: "show" },
         ],
       })
@@ -195,6 +220,23 @@ export default Plugin.define({
         saveConfigFile({ ttsVoiceEn: voice.trim() || "en-US-AriaNeural" })
         refresh()
         toast(`Voz EN: ${voice.trim() || "en-US-AriaNeural"}`, "success")
+      } else if (choice === "tts-list") {
+        const picked = await context.ui.dialog.select({
+          title: "Escolher voz",
+          options: LANG_VOICES.map((v) => ({ title: v.title, value: v.value, category: v.category })),
+        })
+        if (!picked) return
+        const entry = LANG_VOICES.find((v) => v.value === picked)
+        if (!entry) return
+        if (entry.slot === "en") saveConfigFile({ ttsVoiceEn: entry.value })
+        else saveConfigFile({ ttsVoice: entry.value })
+        refresh()
+        toast(`Voz: ${picked}`, "success")
+      } else if (choice === "langs") {
+        await context.ui.dialog.alert({
+          title: "Línguas e vozes disponíveis",
+          message: `${AVAILABLE_LANGUAGES}\n\nAtual — PT: ${cfg.ttsVoice} · EN: ${cfg.ttsVoiceEn}\nA deteção automática escolhe PT ou EN; qualquer nome de voz edge também é aceite.`,
+        })
       } else if (choice === "tts-auto") {
         saveConfigFile({ ttsAuto: !cfg.ttsAuto })
         refresh()

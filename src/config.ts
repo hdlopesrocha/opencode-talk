@@ -59,11 +59,6 @@ export interface VoiceConfig {
 
   /** Show a confirm dialog before sending. */
   confirm: boolean
-  /** Send the transcript automatically instead of copying it to the clipboard. */
-  autosend: boolean
-  /** Emit "listening…"/"mic to text…" status. Server-side this uses a synthetic
-   * message, which wakes the agent, so it is off by default. */
-  status: boolean
   /** How the prompt is delivered to the session. */
   delivery: Delivery
   /** Text prepended to the transcript. */
@@ -109,6 +104,9 @@ export interface VoiceConfig {
   ttsShell: string
   /** Truncate spoken text to this many characters (0 = no limit). */
   ttsMaxChars: number
+
+  /** On stop: "edit" opens an editable dialog before sending; "send" sends directly. */
+  submitMode: "edit" | "send"
 }
 
 function firstDefined<T>(...values: (T | undefined | null)[]): T | undefined {
@@ -184,7 +182,7 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
     ? o.aliases.map((value) => String(value))
     : typeof o.aliases === "string" && o.aliases.trim()
       ? o.aliases.split(",").map((value) => value.trim())
-      : ["stt"]
+      : ["voice", "stt"]
 
   const bundled = bundledLocalCommand()
   const bundledTts = bundledTtsCommand()
@@ -250,11 +248,9 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
     aliases,
 
     confirm: asBool(o.confirm, false),
-    autosend: asBool(firstDefined(o.autosend, o.autoSend, env("OPENCODE_VOICE_AUTOSEND")), false),
-    status: asBool(firstDefined(o.status, env("OPENCODE_VOICE_STATUS")), false),
     delivery,
-    prefix: asString(firstDefined(o.prefix, env("OPENCODE_VOICE_PREFIX")), "") as string,
-    suffix: asString(firstDefined(o.suffix, env("OPENCODE_VOICE_SUFFIX")), "") as string,
+    prefix: firstDefined(asString(o.prefix, undefined), "") as string,
+    suffix: firstDefined(asString(o.suffix, undefined), "") as string,
 
     polish: asBool(o.polish, false),
     polishPrompt: firstDefined(
@@ -292,6 +288,10 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
     ttsCommand,
     ttsShell: firstDefined(asString(o.ttsShell, undefined), platform() === "win32" ? "cmd" : "sh") as string,
     ttsMaxChars: Math.max(0, asNum(firstDefined(o.ttsMaxChars, env("OPENCODE_VOICE_TTS_MAX")), 1500)),
+    submitMode:
+      String(firstDefined(asString(o.submitMode, undefined), env("OPENCODE_VOICE_SUBMIT"), "edit")) === "send"
+        ? "send"
+        : "edit",
   }
 }
 

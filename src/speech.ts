@@ -1,6 +1,3 @@
-import { existsSync, rmSync, statSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import type { VoiceConfig } from "./config.js"
 import { node, platform } from "./node.js"
 
@@ -29,37 +26,6 @@ function state(): SpeechState {
   const key = Symbol.for("opencode.voice.speech.state")
   if (!g[key]) g[key] = { queue: Promise.resolve(), generation: 0 } as SpeechState
   return g[key] as SpeechState
-}
-
-/** Cross-process mute flag: while recording we must not speak (mic feedback). */
-function muteFile(): string {
-  return join(tmpdir(), "opencode-voice.mute")
-}
-
-export function setMuted(muted: boolean): void {
-  try {
-    if (muted) {
-      writeFileSync(muteFile(), String(Date.now()))
-      stopSpeaking()
-    } else {
-      rmSync(muteFile(), { force: true })
-    }
-  } catch {
-    // ignore
-  }
-}
-
-export function isMuted(): boolean {
-  try {
-    if (!existsSync(muteFile())) return false
-    if (Date.now() - statSync(muteFile()).mtimeMs > 5 * 60 * 1000) {
-      rmSync(muteFile(), { force: true })
-      return false
-    }
-    return true
-  } catch {
-    return false
-  }
 }
 
 const EN_WORDS = new Set([
@@ -127,7 +93,7 @@ function pickVoice(cfg: VoiceConfig, text: string): { voice?: string; lang?: str
 }
 
 export function speak(cfg: VoiceConfig, raw: string): Promise<void> {
-  if (!cfg.tts || isMuted()) return Promise.resolve()
+  if (!cfg.tts) return Promise.resolve()
   const text = sanitize(raw, cfg.ttsMaxChars)
   if (!text) return Promise.resolve()
   const st = state()

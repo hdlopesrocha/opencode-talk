@@ -80,22 +80,16 @@ def main() -> int:
         )
         return 3
 
-    def run(vad: bool) -> str:
+    try:
+        samples = load_wav(audio)
+        model = WhisperModel(model_name, device=device, compute_type=compute_type)
         segments, _info = model.transcribe(
             samples,
             language=language,
             beam_size=beam_size,
-            vad_filter=vad,
+            vad_filter=True,
         )
-        return " ".join(segment.text.strip() for segment in segments).strip()
-
-    try:
-        samples = load_wav(audio)
-        model = WhisperModel(model_name, device=device, compute_type=compute_type)
-        text = run(True)
-        if not text:
-            # VAD can drop quiet recordings; retry without it.
-            text = run(False)
+        text = " ".join(segment.text.strip() for segment in segments).strip()
     except Exception as error:
         print(f"transcription failed: {error}", file=sys.stderr)
         return 1

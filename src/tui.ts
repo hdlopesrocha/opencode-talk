@@ -1,9 +1,7 @@
 import { Plugin } from "@opencode/plugin/tui"
-import { copyToClipboard } from "./clipboard.js"
 import { resolveConfig } from "./config.js"
 import { configFilePath, loadConfigFile, saveConfigFile } from "./configfile.js"
 import { startRecording, type Recording } from "./recorder.js"
-import { setMuted } from "./speech.js"
 import { transcribe } from "./transcribe.js"
 
 /** Curated edge-tts voices offered in the settings menu. */
@@ -40,6 +38,8 @@ const AVAILABLE_LANGUAGES = [
  *
  * The OpenCode TUI does not expose a way for plugins to write into the prompt
  * composer, so the transcript is delivered with `session.prompt` instead.
+ * Set `confirm: true` to review it in a dialog first, or `polish: true` to run
+ * it through the current model before sending.
  */
 export default Plugin.define({
   id: "voice-input.tui",
@@ -71,11 +71,10 @@ export default Plugin.define({
       busy = true
       try {
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
-        toast("listening to mic...", "info", 2500)
+        toast("Recording… press again to stop and send", "info", 2500)
         if (cfg.maxDuration > 0) {
           autoStop = setTimeout(() => void finish(), cfg.maxDuration * 1000)
         }
-        setMuted(true)
       } catch (error) {
         recording = undefined
         toast(`Could not start recording — ${(error as Error).message}`, "error", 7000)
@@ -84,7 +83,7 @@ export default Plugin.define({
       }
     }
 
-    async function finish(sendOverride?: boolean) {
+    async function finish() {
       refresh()
       const active = recording
       if (!active) return
@@ -105,8 +104,8 @@ export default Plugin.define({
             return
           }
 
-          toast("mic to text...", "info", 2000)
-          let text = (await transcribe(cfg, file)).trim()
+          toast("Transcribing…", "info", 2000)
+          let text = await transcribe(cfg, file)
           if (!text) {
             toast("No speech detected", "warning")
             return
@@ -114,21 +113,27 @@ export default Plugin.define({
 
           if (cfg.polish && sessionID) text = await polish(sessionID, text)
 
+          if (cfg.submitMode === "edit") {
+            const edited = await context.ui.dialog.prompt({
+              title: "Editar transcrição",
+              description: "Edita e prime Enter para enviar (Esc descarta)",
+              value: text,
+            })
+            if (edited === undefined) {
+              toast("Descartado", "warning")
+              return
+            }
+            text = edited.trim()
+            if (!text) {
+              toast("Texto vazio", "warning")
+              return
+            }
+          }
+
           const finalText = [cfg.prefix, text, cfg.suffix]
-            .map((part) => String(part ?? "").trim())
+            .map((part) => part.trim())
             .filter(Boolean)
             .join(" ")
-
-          const shouldSend = sendOverride ?? cfg.autosend
-          if (!shouldSend) {
-            const ok = await copyToClipboard(finalText)
-            toast(
-              ok ? "Transcrito copiado — cola (Ctrl+V), edita e envia" : "Transcrito pronto (não foi possível copiar)",
-              ok ? "success" : "warning",
-              6000,
-            )
-            return
-          }
 
           if (!sessionID) {
             await context.ui.dialog.alert({ title: "Voice transcript", message: finalText })
@@ -155,7 +160,6 @@ export default Plugin.define({
           toast("Sent", "success", 2500)
         } finally {
           if (!cfg.keepAudio) await active.abort()
-          setMuted(false)
         }
       } catch (error) {
         toast(`Voice failed — ${(error as Error).message}`, "error", 7000)
@@ -188,8 +192,7 @@ export default Plugin.define({
           { title: "Voz do TTS (inglês) — texto livre", value: "tts-en" },
           { title: "Voz do TTS (francês) — texto livre", value: "tts-fr" },
           { title: "Línguas/vozes disponíveis (mostrar)", value: "langs" },
-          { title: "Deteção automática de idioma (pt/en/fr)", value: "tts-auto" },
-          { title: cfg.status ? "Desligar estado no chat" : "Ligar estado no chat (listening/mic to text)", value: "status-toggle" },
+          { title: "Deteção automática de idioma (pt/en)", value: "tts-auto" },
           { title: cfg.tts ? "Desligar TTS" : "Ligar TTS", value: "tts-toggle" },
           { title: "Mostrar configuração atual", value: "show" },
         ],
@@ -263,16 +266,12 @@ export default Plugin.define({
       } else if (choice === "langs") {
         await context.ui.dialog.alert({
           title: "Línguas e vozes disponíveis",
-          message: `${AVAILABLE_LANGUAGES}\n\nAtual — PT: ${cfg.ttsVoice} · EN: ${cfg.ttsVoiceEn} · FR: ${cfg.ttsVoiceFr}\nA deteção automática escolhe PT/EN/FR; qualquer nome de voz edge também é aceite.`,
+          message: `${AVAILABLE_LANGUAGES}\n\nAtual — PT: ${cfg.ttsVoice} · EN: ${cfg.ttsVoiceEn}\nA deteção automática escolhe PT ou EN; qualquer nome de voz edge também é aceite.`,
         })
       } else if (choice === "tts-auto") {
         saveConfigFile({ ttsAuto: !cfg.ttsAuto })
         refresh()
         toast(cfg.ttsAuto ? "Deteção automática: ligada" : "Deteção automática: desligada", "success")
-      } else if (choice === "status-toggle") {
-        saveConfigFile({ status: !cfg.status })
-        refresh()
-        toast(cfg.status ? "Estado no chat ligado" : "Estado no chat desligado", "success")
       } else if (choice === "tts-toggle") {
         saveConfigFile({ tts: !cfg.tts })
         refresh()
@@ -289,9 +288,8 @@ export default Plugin.define({
       }
     }
 
-    const cancelWords = new Set(["abort", "cancel", "cancelar", "cancela", "parar", "para"])
-    const submitWords = new Set(["submit", "finalize", "finalizar", "terminar", "concluir", "copy", "copiar"])
-    const sendWords = new Set(["send", "enviar", "submeter"])
+    const cancelWords = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+    const submitWords = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
     const startWords = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 
     async function cancelRecording() {
@@ -303,7 +301,6 @@ export default Plugin.define({
         autoStop = undefined
       }
       await active.abort()
-      setMuted(false)
       toast("Gravação cancelada", "warning", 2500)
     }
 
@@ -314,12 +311,7 @@ export default Plugin.define({
         return
       }
       if (submitWords.has(arg)) {
-        if (recording) void finish(false)
-        else toast("Nada a gravar", "warning", 2000)
-        return
-      }
-      if (sendWords.has(arg)) {
-        if (recording) void finish(true)
+        if (recording) void finish()
         else toast("Nada a gravar", "warning", 2000)
         return
       }
@@ -342,7 +334,8 @@ export default Plugin.define({
         {
           id: "voice.input.toggle",
           title: "Voice input",
-          description: "Voice input: /mic toggles; /mic start, /mic submit, /mic send, /mic abort",
+          description:
+            "Voice input: /voice toggles; /voice start, /voice submit, /voice stop",
           group: "Voice",
           bind: cfg.keybind === false ? false : cfg.keybind,
           palette: true,
@@ -372,7 +365,6 @@ export default Plugin.define({
     return () => {
       if (autoStop) clearTimeout(autoStop)
       if (recording) void recording.abort()
-      setMuted(false)
     }
   },
 })

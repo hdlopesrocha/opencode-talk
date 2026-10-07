@@ -1,27 +1,19 @@
 import { Plugin } from "@opencode/plugin"
-import { copyToClipboard } from "./src/clipboard.js"
 import { resolveConfig } from "./src/config.js"
 import { saveConfigFile } from "./src/configfile.js"
 import { startRecording, type Recording } from "./src/recorder.js"
-import { claimOnce, isSpeakerOwner, setMuted, speak, stopSpeaking } from "./src/speech.js"
+import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
-/** `/mic <arg>` subcommands. */
-const ABORT_WORDS = new Set(["abort", "cancel", "cancelar", "cancela", "parar", "para"])
-const SUBMIT_WORDS = new Set(["submit", "finalize", "finalizar", "terminar", "concluir", "copy", "copiar"])
-const SEND_WORDS = new Set(["send", "enviar", "submeter"])
+/** `/voice <arg>` subcommands. */
+const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+const SUBMIT_WORDS = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
 const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 
-/** `/sound <arg>` subcommands. */
-const SOUND_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
-const SOUND_OFF_WORDS = new Set([
-  "stop",
-  "abort",
-  "cancel",
-  "cancelar",
-  "cancela",
-  "parar",
-  "para",
+/** `/tts <arg>` subcommands. */
+const TTS_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
+const TTS_OFF_WORDS = new Set([
+  ...CANCEL_WORDS,
   "off",
   "desligar",
   "desliga",
@@ -34,12 +26,12 @@ const SOUND_OFF_WORDS = new Set([
 ])
 
 /**
- * Server half of the plugin: registers `/mic`, `/sound` and `/mic-setup` so
- * voice input and speech work in any client (terminal TUI, desktop, web).
+ * Server half of the voice plugin.
  *
- * `/mic` toggles: first call records, second finalizes. By default the final
- * transcript is copied to the clipboard (edit it and send yourself); set
- * `autosend` to send it directly.
+ * This registers a `/voice` command on the server, so voice input works in any
+ * client (terminal TUI, desktop, web) and does not depend on the terminal-only
+ * plugin loading. It toggles: the first call starts recording, the second stops,
+ * transcribes, and sends the text as a prompt.
  */
 export default Plugin.define({
   id: "voice-input",
@@ -54,7 +46,7 @@ export default Plugin.define({
     let timer: ReturnType<typeof setTimeout> | undefined
     let target: { sessionID: string; prompt: Record<string, unknown>; delivery: "steer" | "queue" } | undefined
 
-    async function finish(sendOverride?: boolean) {
+    async function finish() {
       refresh()
       const active = recording
       if (!active) return
@@ -65,36 +57,20 @@ export default Plugin.define({
       }
       const current = target
       target = undefined
-      const shouldSend = sendOverride ?? cfg.autosend
 
-      const { file, durationMs } = await active.stop()
+      const { file } = await active.stop()
       try {
-        if (durationMs < cfg.minDuration * 1000) {
-          throw new Error("recording too short — speak a little longer")
-        }
-        if (cfg.status && current) {
-          await ctx.session.synthetic({ sessionID: current.sessionID, text: "mic to text..." }).catch(() => {})
-        }
         const text = (await transcribe(cfg, file)).trim()
-        if (!text) return
-        const finalText = [cfg.prefix, text, cfg.suffix]
-          .map((part) => String(part ?? "").trim())
-          .filter(Boolean)
-          .join(" ")
-
-        if (shouldSend && current) {
+        if (text && current) {
           await ctx.session.prompt({
             ...(current.prompt as object),
             sessionID: current.sessionID,
-            text: finalText,
+            text,
             delivery: current.delivery,
           } as never)
-        } else {
-          await copyToClipboard(finalText)
         }
       } finally {
         await active.abort()
-        setMuted(false)
       }
     }
 
@@ -105,10 +81,6 @@ export default Plugin.define({
       try {
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
         target = { sessionID, prompt, delivery }
-        setMuted(true)
-        if (cfg.status) {
-          await ctx.session.synthetic({ sessionID, text: "listening to mic..." }).catch(() => {})
-        }
         if (cfg.maxDuration > 0) {
           timer = setTimeout(() => void finish().catch(() => {}), cfg.maxDuration * 1000)
         }
@@ -127,27 +99,22 @@ export default Plugin.define({
       }
       target = undefined
       await active.abort()
-      setMuted(false)
     }
 
     await ctx.command.transform((editor) => {
       editor.add({
         name: "mic",
         description:
-          "Voice input. `/mic` toggles; `/mic start` records; `/mic submit` stops & copies the text (edit + send); `/mic send` stops & sends; `/mic abort` cancels",
+          "Microphone. `/mic` toggles (start, then stop & transcribe); `/mic start` records, `/mic submit` stops & transcribes, `/mic abort` cancels",
         execute: async ({ sessionID, prompt, delivery }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?mic\b/, "").trim()
-          if (ABORT_WORDS.has(arg)) {
+          if (CANCEL_WORDS.has(arg)) {
             if (recording) await cancel()
             return
           }
-          if (SEND_WORDS.has(arg)) {
-            if (recording) await finish(true)
-            return
-          }
           if (SUBMIT_WORDS.has(arg)) {
-            if (recording) await finish(false)
+            if (recording) await finish()
             return
           }
           if (START_WORDS.has(arg)) {
@@ -164,13 +131,13 @@ export default Plugin.define({
         execute: async ({ prompt }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?sound\b/, "").trim()
-          if (SOUND_ON_WORDS.has(arg)) {
+          if (TTS_ON_WORDS.has(arg)) {
             saveConfigFile({ tts: true })
             refresh()
             void speak(cfg, "Voz ligada.")
             return
           }
-          if (SOUND_OFF_WORDS.has(arg)) {
+          if (TTS_OFF_WORDS.has(arg)) {
             stopSpeaking()
             saveConfigFile({ tts: false })
             refresh()
@@ -182,45 +149,6 @@ export default Plugin.define({
           saveConfigFile({ tts: next })
           refresh()
           if (next) void speak(cfg, "Voz ligada.")
-        },
-      })
-      editor.add({
-        name: "mic-setup",
-        description:
-          "Configure voice from any client: autosend on|off, status on|off, sound on|off, auto on|off, voice-pt|voice-en|voice-fr <name>, backend local|api, key <key>",
-        execute: async ({ prompt }) => {
-          const raw = String((prompt as { text?: string })?.text ?? "").trim()
-          const parts = raw.split(/\s+/).filter(Boolean)
-          if (parts[0]?.replace(/^\//, "").toLowerCase() === "mic-setup") parts.shift()
-          const cmd = (parts.shift() ?? "").toLowerCase()
-          const value = parts.join(" ").trim()
-          const isOn = (v: string) => ["on", "1", "true", "sim", "yes", "ligar"].includes(v.toLowerCase())
-          const isOff = (v: string) => ["off", "0", "false", "nao", "não", "no", "desligar"].includes(v.toLowerCase())
-
-          refresh()
-          if (cmd === "autosend") {
-            saveConfigFile({ autosend: isOn(value) ? true : isOff(value) ? false : !cfg.autosend })
-          } else if (cmd === "status") {
-            saveConfigFile({ status: isOn(value) ? true : isOff(value) ? false : !cfg.status })
-          } else if (cmd === "sound" || cmd === "tts") {
-            const next = isOn(value) ? true : isOff(value) ? false : !cfg.tts
-            if (!next) stopSpeaking()
-            saveConfigFile({ tts: next })
-            refresh()
-            if (next) void speak(cfg, "Voz ligada.")
-          } else if (cmd === "auto") {
-            saveConfigFile({ ttsAuto: isOn(value) ? true : isOff(value) ? false : !cfg.ttsAuto })
-          } else if (cmd === "voice-pt") {
-            if (value) saveConfigFile({ ttsVoice: value })
-          } else if (cmd === "voice-en") {
-            if (value) saveConfigFile({ ttsVoiceEn: value })
-          } else if (cmd === "voice-fr") {
-            if (value) saveConfigFile({ ttsVoiceFr: value })
-          } else if (cmd === "backend" && (value === "local" || value === "api")) {
-            saveConfigFile({ backend: value })
-          } else if (cmd === "key" && value) {
-            saveConfigFile({ backend: "api", apiKey: value })
-          }
         },
       })
     })

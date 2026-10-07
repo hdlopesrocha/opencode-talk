@@ -4,6 +4,9 @@ import { startRecording, type Recording } from "./src/recorder.js"
 import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
+/** Arguments to `/voice` that cancel an in-progress recording. */
+const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+
 /**
  * Server half of the voice plugin.
  *
@@ -68,11 +71,30 @@ export default Plugin.define({
       }
     }
 
+    async function cancel() {
+      const active = recording
+      if (!active) return
+      recording = undefined
+      if (timer) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      target = undefined
+      await active.abort()
+    }
+
     await ctx.command.transform((editor) => {
       editor.add({
         name: "voice",
-        description: "Record the microphone, transcribe it, and send it as a prompt (run again to stop)",
+        description:
+          "Record the microphone, transcribe it, and send it as a prompt (run again to stop; /voice stop to cancel)",
         execute: async ({ sessionID, prompt, delivery }) => {
+          const raw = String((prompt as { text?: string })?.text ?? "")
+          const arg = raw.trim().toLowerCase().replace(/^\/?voice\b/, "").trim()
+          if (CANCEL_WORDS.has(arg)) {
+            if (recording) await cancel()
+            return
+          }
           if (recording) await finish()
           else await start(sessionID, prompt as unknown as Record<string, unknown>, delivery)
         },

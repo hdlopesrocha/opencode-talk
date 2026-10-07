@@ -143,6 +143,8 @@ Override the command binding in `cli.json`:
 3. A "Recording…" toast appears. Speak.
 4. Press the key again to stop. A "Transcribing…" toast appears, then the text
    is sent to the session.
+5. To **cancel** an in-progress recording (discard it, send nothing), run
+   `/voice stop` (`cancel`, `abort`, `parar` also work).
 
 Recording also stops automatically after `maxDuration` seconds (default 120).
 

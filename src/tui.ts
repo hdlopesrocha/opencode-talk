@@ -257,6 +257,29 @@ export default Plugin.define({
       }
     }
 
+    const cancelWords = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+
+    async function cancelRecording() {
+      const active = recording
+      if (!active) return
+      recording = undefined
+      if (autoStop) {
+        clearTimeout(autoStop)
+        autoStop = undefined
+      }
+      await active.abort()
+      toast("Gravação cancelada", "warning", 2500)
+    }
+
+    function handleRun(input?: string) {
+      const arg = String(input ?? "").trim().toLowerCase()
+      if (cancelWords.has(arg)) {
+        void cancelRecording()
+        return
+      }
+      toggle()
+    }
+
     function toggle() {
       void (recording ? finish() : begin())
     }
@@ -268,15 +291,15 @@ export default Plugin.define({
         {
           id: "voice.input.toggle",
           title: "Voice input",
-          description: "Record the microphone, transcribe it, and send it as a prompt",
+          description: "Record the microphone, transcribe it, and send it as a prompt (/voice stop cancels)",
           group: "Voice",
           bind: cfg.keybind === false ? false : cfg.keybind,
           palette: true,
           slash: cfg.slash
             ? { name: cfg.slash, aliases: cfg.aliases, arguments: true }
             : undefined,
-          run: () => {
-            toggle()
+          run: (input) => {
+            handleRun(input)
           },
         },
         {

@@ -138,13 +138,13 @@ Override the command binding in `cli.json`:
 ## Usage
 
 1. Open a session.
-2. Press `<leader>v` (by default `Ctrl+X` then `v`), or type `/voice` and press
-   Enter (it also appears in the slash menu).
+2. Start recording — press `<leader>v` (by default `Ctrl+X` then `v`), or run
+   `/voice` (`/voice start` also works).
 3. A "Recording…" toast appears. Speak.
-4. Press the key again to stop. A "Transcribing…" toast appears, then the text
-   is sent to the session.
-5. To **cancel** an in-progress recording (discard it, send nothing), run
-   `/voice stop` (`cancel`, `abort`, `parar` also work).
+4. Stop & send — press the key again, run `/voice` (it toggles), or
+   `/voice submit`.
+5. To **cancel** (discard, send nothing), run `/voice stop` (`cancel`, `abort`,
+   `parar` also work).
 
 Recording also stops automatically after `maxDuration` seconds (default 120).
 

@@ -5,8 +5,10 @@ import { startRecording, type Recording } from "./src/recorder.js"
 import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
-/** Arguments to `/voice` that cancel an in-progress recording. */
+/** `/voice <arg>` subcommands. */
 const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+const SUBMIT_WORDS = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
+const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 
 /** Arguments to `/tts` that immediately stop the current speech. */
 const TTS_STOP_WORDS = new Set([...CANCEL_WORDS, "silence", "silencio", "silêncio", "quiet", "silenciar"])
@@ -91,12 +93,20 @@ export default Plugin.define({
       editor.add({
         name: "voice",
         description:
-          "Record the microphone, transcribe it, and send it as a prompt (run again to stop; /voice stop to cancel)",
+          "Voice input. `/voice` toggles (start, then stop & send); `/voice start` records, `/voice submit` stops & sends, `/voice stop` cancels",
         execute: async ({ sessionID, prompt, delivery }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?voice\b/, "").trim()
           if (CANCEL_WORDS.has(arg)) {
             if (recording) await cancel()
+            return
+          }
+          if (SUBMIT_WORDS.has(arg)) {
+            if (recording) await finish()
+            return
+          }
+          if (START_WORDS.has(arg)) {
+            if (!recording) await start(sessionID, prompt as unknown as Record<string, unknown>, delivery)
             return
           }
           if (recording) await finish()

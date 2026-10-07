@@ -258,6 +258,8 @@ export default Plugin.define({
     }
 
     const cancelWords = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+    const submitWords = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
+    const startWords = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 
     async function cancelRecording() {
       const active = recording
@@ -277,6 +279,16 @@ export default Plugin.define({
         void cancelRecording()
         return
       }
+      if (submitWords.has(arg)) {
+        if (recording) void finish()
+        else toast("Nada a gravar", "warning", 2000)
+        return
+      }
+      if (startWords.has(arg)) {
+        if (recording) toast("Já está a gravar", "info", 2000)
+        else void begin()
+        return
+      }
       toggle()
     }
 
@@ -291,7 +303,8 @@ export default Plugin.define({
         {
           id: "voice.input.toggle",
           title: "Voice input",
-          description: "Record the microphone, transcribe it, and send it as a prompt (/voice stop cancels)",
+          description:
+            "Voice input: /voice toggles; /voice start, /voice submit, /voice stop",
           group: "Voice",
           bind: cfg.keybind === false ? false : cfg.keybind,
           palette: true,

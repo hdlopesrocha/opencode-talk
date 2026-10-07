@@ -118,7 +118,7 @@ export default Plugin.define({
       })
       editor.add({
         name: "sound",
-        description: "Toggle speech of agent messages: /sound (toggle), /sound start, /sound stop",
+        description: "Toggle speech of agent messages: /sound (toggle), /sound start, /sound stop, /sound pause",
         execute: async ({ prompt }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?sound\b/, "").trim()

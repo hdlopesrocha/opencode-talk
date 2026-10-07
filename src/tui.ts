@@ -68,6 +68,11 @@ export default Plugin.define({
     async function begin() {
       if (busy || recording) return
       refresh()
+      // Silence the server-side TTS before we start capturing the mic.
+      const sessionID = activeSessionID()
+      if (sessionID) {
+        void context.client.session.command({ sessionID, name: "sound", text: "pause" }).catch(() => {})
+      }
       busy = true
       try {
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })

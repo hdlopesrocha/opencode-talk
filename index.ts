@@ -10,20 +10,10 @@ const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cance
 const SUBMIT_WORDS = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
 const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 
-/** `/tts <arg>` subcommands. */
+/** `/sound <arg>` subcommands. */
 const TTS_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
-const TTS_OFF_WORDS = new Set([
-  ...CANCEL_WORDS,
-  "off",
-  "desligar",
-  "desliga",
-  "disable",
-  "silence",
-  "silencio",
-  "silêncio",
-  "quiet",
-  "silenciar",
-])
+const TTS_PAUSE_WORDS = new Set(["pause", "silence", "silencio", "silêncio", "quiet", "hush", "calar", "parar", "para"])
+const TTS_OFF_WORDS = new Set([...CANCEL_WORDS, "off", "desligar", "desliga", "disable"])
 
 /**
  * Server half of the voice plugin.
@@ -77,6 +67,7 @@ export default Plugin.define({
     async function start(sessionID: string, prompt: Record<string, unknown>, delivery: "steer" | "queue") {
       if (starting || recording) return
       refresh()
+      stopSpeaking() // silence any ongoing TTS before recording
       starting = true
       try {
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
@@ -135,6 +126,10 @@ export default Plugin.define({
             saveConfigFile({ tts: true })
             refresh()
             void speak(cfg, "Voz ligada.")
+            return
+          }
+          if (TTS_PAUSE_WORDS.has(arg)) {
+            stopSpeaking()
             return
           }
           if (TTS_OFF_WORDS.has(arg)) {

@@ -71,7 +71,7 @@ export default Plugin.define({
       busy = true
       try {
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
-        toast("Recording… press again to stop and send", "info", 2500)
+        toast("listening to mic...", "info", 2500)
         if (cfg.maxDuration > 0) {
           autoStop = setTimeout(() => void finish(), cfg.maxDuration * 1000)
         }
@@ -105,7 +105,7 @@ export default Plugin.define({
             return
           }
 
-          toast("Transcribing…", "info", 2000)
+          toast("mic to text...", "info", 2000)
           let text = (await transcribe(cfg, file)).trim()
           if (!text) {
             toast("No speech detected", "warning")
@@ -189,6 +189,7 @@ export default Plugin.define({
           { title: "Voz do TTS (francês) — texto livre", value: "tts-fr" },
           { title: "Línguas/vozes disponíveis (mostrar)", value: "langs" },
           { title: "Deteção automática de idioma (pt/en/fr)", value: "tts-auto" },
+          { title: cfg.status ? "Desligar estado no chat" : "Ligar estado no chat (listening/mic to text)", value: "status-toggle" },
           { title: cfg.tts ? "Desligar TTS" : "Ligar TTS", value: "tts-toggle" },
           { title: "Mostrar configuração atual", value: "show" },
         ],
@@ -268,6 +269,10 @@ export default Plugin.define({
         saveConfigFile({ ttsAuto: !cfg.ttsAuto })
         refresh()
         toast(cfg.ttsAuto ? "Deteção automática: ligada" : "Deteção automática: desligada", "success")
+      } else if (choice === "status-toggle") {
+        saveConfigFile({ status: !cfg.status })
+        refresh()
+        toast(cfg.status ? "Estado no chat ligado" : "Estado no chat desligado", "success")
       } else if (choice === "tts-toggle") {
         saveConfigFile({ tts: !cfg.tts })
         refresh()

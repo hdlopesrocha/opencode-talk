@@ -63,6 +63,9 @@ export default Plugin.define({
 
       const { file } = await active.stop()
       try {
+        if (cfg.status && current) {
+          await ctx.session.synthetic({ sessionID: current.sessionID, text: "mic to text..." }).catch(() => {})
+        }
         const text = (await transcribe(cfg, file)).trim()
         if (!text) return
         const finalText = [cfg.prefix, text, cfg.suffix]
@@ -94,6 +97,9 @@ export default Plugin.define({
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
         target = { sessionID, prompt, delivery }
         setMuted(true)
+        if (cfg.status) {
+          await ctx.session.synthetic({ sessionID, text: "listening to mic..." }).catch(() => {})
+        }
         if (cfg.maxDuration > 0) {
           timer = setTimeout(() => void finish().catch(() => {}), cfg.maxDuration * 1000)
         }
@@ -172,7 +178,7 @@ export default Plugin.define({
       editor.add({
         name: "mic-setup",
         description:
-          "Configure voice from any client: autosend on|off, sound on|off, auto on|off, voice-pt|voice-en|voice-fr <name>, backend local|api, key <key>",
+          "Configure voice from any client: autosend on|off, status on|off, sound on|off, auto on|off, voice-pt|voice-en|voice-fr <name>, backend local|api, key <key>",
         execute: async ({ prompt }) => {
           const raw = String((prompt as { text?: string })?.text ?? "").trim()
           const parts = raw.split(/\s+/).filter(Boolean)
@@ -185,6 +191,8 @@ export default Plugin.define({
           refresh()
           if (cmd === "autosend") {
             saveConfigFile({ autosend: isOn(value) ? true : isOff(value) ? false : !cfg.autosend })
+          } else if (cmd === "status") {
+            saveConfigFile({ status: isOn(value) ? true : isOff(value) ? false : !cfg.status })
           } else if (cmd === "sound" || cmd === "tts") {
             const next = isOn(value) ? true : isOff(value) ? false : !cfg.tts
             if (!next) stopSpeaking()

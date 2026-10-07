@@ -61,6 +61,9 @@ export interface VoiceConfig {
   confirm: boolean
   /** Send the transcript automatically instead of copying it to the clipboard. */
   autosend: boolean
+  /** Emit "listening…"/"mic to text…" status. Server-side this uses a synthetic
+   * message, which wakes the agent, so it is off by default. */
+  status: boolean
   /** How the prompt is delivered to the session. */
   delivery: Delivery
   /** Text prepended to the transcript. */
@@ -248,6 +251,7 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
 
     confirm: asBool(o.confirm, false),
     autosend: asBool(firstDefined(o.autosend, o.autoSend, env("OPENCODE_VOICE_AUTOSEND")), false),
+    status: asBool(firstDefined(o.status, env("OPENCODE_VOICE_STATUS")), false),
     delivery,
     prefix: firstDefined(asString(o.prefix, undefined), "") as string,
     suffix: firstDefined(asString(o.suffix, undefined), "") as string,

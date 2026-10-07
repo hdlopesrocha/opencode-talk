@@ -33,6 +33,7 @@ const context: any = {
     router: { current: () => ({ type: "session", sessionID: "ses_smoke" }) },
     panel: { current: () => undefined },
     dialog: { alert: async () => {}, confirm: async () => true },
+    slot: () => () => {},
   },
   keymap: { layer: (factory: () => any) => layers.push(factory()) },
   client: { session: { prompt: async () => ({}), generate: async () => ({ text: "" }) } },

@@ -1,7 +1,10 @@
 import { Plugin } from "@opencode/plugin/tui"
+import { createComponent, createSignal } from "solid-js"
 import { resolveConfig } from "./config.js"
 import { configFilePath, loadConfigFile, saveConfigFile } from "./configfile.js"
+import { LiveTranscript } from "./live.js"
 import { startRecording, type Recording } from "./recorder.js"
+import { startLive, type LiveHandle } from "./stream.js"
 import { transcribe } from "./transcribe.js"
 
 /** Curated edge-tts voices offered in the settings menu. */
@@ -50,8 +53,20 @@ export default Plugin.define({
     }
 
     let recording: Recording | undefined
+    let live: LiveHandle | undefined
     let autoStop: ReturnType<typeof setTimeout> | undefined
     let busy = false
+
+    const [liveCaption, setLiveCaption] = createSignal("")
+    context.ui.slot({
+      append: "session.composer.top",
+      render: () =>
+        createComponent(LiveTranscript, {
+          get text() {
+            return liveCaption()
+          },
+        }),
+    })
 
     const toast = (
       message: string,
@@ -66,17 +81,28 @@ export default Plugin.define({
     }
 
     async function begin() {
-      if (busy || recording) return
+      if (busy || recording || live) return
       refresh()
       busy = true
       try {
-        recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
-        toast("Recording… press again to stop and send", "info", 2500)
+        if (cfg.live) {
+          setLiveCaption("")
+          live = await startLive({
+            lang: cfg.liveLang,
+            onPartial: (text) => setLiveCaption(text),
+          })
+          toast(`A ouvir em tempo real (${cfg.liveLang})…`, "info", 2500)
+        } else {
+          recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
+          toast("Recording… press again to stop and send", "info", 2500)
+        }
         if (cfg.maxDuration > 0) {
           autoStop = setTimeout(() => void finish(), cfg.maxDuration * 1000)
         }
       } catch (error) {
         recording = undefined
+        live = undefined
+        setLiveCaption("")
         toast(`Could not start recording — ${(error as Error).message}`, "error", 7000)
       } finally {
         busy = false
@@ -85,9 +111,11 @@ export default Plugin.define({
 
     async function finish() {
       refresh()
-      const active = recording
-      if (!active) return
+      const activeRecording = recording
+      const activeLive = live
+      if (!activeRecording && !activeLive) return
       recording = undefined
+      live = undefined
       if (autoStop) {
         clearTimeout(autoStop)
         autoStop = undefined
@@ -97,15 +125,23 @@ export default Plugin.define({
       busy = true
       try {
         try {
-          const { file, durationMs } = await active.stop()
+          let text = ""
+          if (activeLive) {
+            toast("A finalizar…", "info", 1500)
+            text = (await activeLive.stop()).trim()
+            setLiveCaption("")
+          } else if (activeRecording) {
+            const { file, durationMs } = await activeRecording.stop()
 
-          if (durationMs < cfg.minDuration * 1000) {
-            toast("Recording was too short", "warning")
-            return
+            if (durationMs < cfg.minDuration * 1000) {
+              toast("Recording was too short", "warning")
+              return
+            }
+
+            toast("Transcribing…", "info", 2000)
+            text = (await transcribe(cfg, file)).trim()
           }
 
-          toast("Transcribing…", "info", 2000)
-          let text = await transcribe(cfg, file)
           if (!text) {
             toast("No speech detected", "warning")
             return
@@ -142,7 +178,8 @@ export default Plugin.define({
           })
           toast("Sent", "success", 2500)
         } finally {
-          if (!cfg.keepAudio) await active.abort()
+          if (activeRecording && !cfg.keepAudio) await activeRecording.abort()
+          setLiveCaption("")
         }
       } catch (error) {
         toast(`Voice failed — ${(error as Error).message}`, "error", 7000)
@@ -175,7 +212,9 @@ export default Plugin.define({
           { title: "Voz do TTS (inglês) — texto livre", value: "tts-en" },
           { title: "Voz do TTS (francês) — texto livre", value: "tts-fr" },
           { title: "Línguas/vozes disponíveis (mostrar)", value: "langs" },
-          { title: "Deteção automática de idioma (pt/en)", value: "tts-auto" },
+          { title: "Deteção automática de idioma (pt/en/fr)", value: "tts-auto" },
+          { title: cfg.live ? "Desligar modo tempo real (live)" : "Ligar modo tempo real (live)", value: "live-toggle" },
+          { title: `Língua do modo live (${cfg.liveLang})`, value: "live-lang" },
           { title: cfg.tts ? "Desligar TTS" : "Ligar TTS", value: "tts-toggle" },
           { title: "Mostrar configuração atual", value: "show" },
         ],
@@ -255,6 +294,20 @@ export default Plugin.define({
         saveConfigFile({ ttsAuto: !cfg.ttsAuto })
         refresh()
         toast(cfg.ttsAuto ? "Deteção automática: ligada" : "Deteção automática: desligada", "success")
+      } else if (choice === "live-toggle") {
+        saveConfigFile({ live: !cfg.live })
+        refresh()
+        toast(cfg.live ? "Modo tempo real ligado" : "Modo tempo real desligado", "success")
+      } else if (choice === "live-lang") {
+        const lang = await context.ui.dialog.prompt({
+          title: "Língua do modo tempo real",
+          description: "pt, en ou fr (modelo Vosk)",
+          value: String(cfg.liveLang ?? "pt"),
+        })
+        if (lang === undefined) return
+        saveConfigFile({ liveLang: lang.trim().toLowerCase() || "pt" })
+        refresh()
+        toast(`Live: ${lang.trim() || "pt"}`, "success")
       } else if (choice === "tts-toggle") {
         saveConfigFile({ tts: !cfg.tts })
         refresh()
@@ -276,14 +329,22 @@ export default Plugin.define({
     const startWords = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 
     async function cancelRecording() {
-      const active = recording
-      if (!active) return
+      const activeRecording = recording
+      const activeLive = live
+      if (!activeRecording && !activeLive) return
       recording = undefined
+      live = undefined
       if (autoStop) {
         clearTimeout(autoStop)
         autoStop = undefined
       }
-      await active.abort()
+      setLiveCaption("")
+      try {
+        if (activeLive) await activeLive.abort()
+        if (activeRecording) await activeRecording.abort()
+      } catch {
+        // ignore
+      }
       toast("Gravação cancelada", "warning", 2500)
     }
 
@@ -294,12 +355,12 @@ export default Plugin.define({
         return
       }
       if (submitWords.has(arg)) {
-        if (recording) void finish()
+        if (recording || live) void finish()
         else toast("Nada a gravar", "warning", 2000)
         return
       }
       if (startWords.has(arg)) {
-        if (recording) toast("Já está a gravar", "info", 2000)
+        if (recording || live) toast("Já está a gravar", "info", 2000)
         else void begin()
         return
       }
@@ -307,7 +368,7 @@ export default Plugin.define({
     }
 
     function toggle() {
-      void (recording ? finish() : begin())
+      void (recording || live ? finish() : begin())
     }
 
     context.keymap.layer(() => ({
@@ -348,6 +409,7 @@ export default Plugin.define({
     return () => {
       if (autoStop) clearTimeout(autoStop)
       if (recording) void recording.abort()
+      if (live) void live.abort()
     }
   },
 })

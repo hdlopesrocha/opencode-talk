@@ -21,6 +21,8 @@
   "devDependencies": {
     "@opencode/client": "2.0.24",
     "@opencode/plugin": "2.0.24",
+    "@opentui/core": "^0.5.14",
+    "@opentui/solid": "^0.5.14",
     "@types/node": "^24.0.0",
     "solid-js": "^1.9.16",
     "tsx": "^4.19.0",

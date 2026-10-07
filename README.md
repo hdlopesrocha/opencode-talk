@@ -163,6 +163,33 @@ Run `/voice-setup` (or pick **Voice: configuração** from `Ctrl+P`) to:
 
 Changes apply immediately — the plugin re-reads `voice.json` on every use.
 
+### Real-time (live) mode
+
+Enable it in `/voice-setup` → **“Ligar modo tempo real (live)”**, or set
+`OPENCODE_VOICE_LIVE=1`. While you speak, the growing transcript is shown as a
+live caption **above the composer**; when you stop, the final text is sent.
+`/voice stop` still cancels.
+
+Live mode uses **Vosk** (offline streaming) and needs a small per-language model.
+Pick the language in `/voice-setup` → **“Língua do modo live”**, or with
+`OPENCODE_VOICE_LIVE_LANG=pt|en|fr`. Download the models with:
+
+```sh
+./scripts/vosk_models.sh
+```
+
+Models live in `~/.cache/opencode-voice/vosk/` (override per language with
+`OPENCODE_VOICE_VOSK_MODEL_PT` / `_EN` / `_FR`).
+
+| Variable                           | Default | Purpose                                |
+| ---------------------------------- | ------- | -------------------------------------- |
+| `OPENCODE_VOICE_LIVE`              | `0`     | Enable real-time mode.                 |
+| `OPENCODE_VOICE_LIVE_LANG`         | `pt`    | Live model language: `pt`, `en`, `fr`. |
+| `OPENCODE_VOICE_VOSK_MODEL_<LANG>` | –       | Explicit Vosk model path.              |
+
+> Live mode is a terminal (TUI) feature, because the caption is drawn in the TUI.
+> The server `/voice` command still does batch transcription in other clients.
+
 ## Text-to-speech (agent messages)
 
 The plugin also reads the **main agent's** messages aloud:

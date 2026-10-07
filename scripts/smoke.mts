@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url"
 
 import plugin from "../tui.ts"
 import { resolveConfig } from "../src/config.ts"
-import { sanitize } from "../src/speech.ts"
+import { detectLanguage, sanitize } from "../src/speech.ts"
 import { transcribe } from "../src/transcribe.ts"
 import { startRecording } from "../src/recorder.ts"
 
@@ -66,6 +66,8 @@ if (existsSync(bundledPython)) {
 check("sanitize removes code blocks", sanitize("```js\nconst x = 1\n```", 0) === "")
 check("sanitize keeps link label", sanitize("[label](http://example.com)", 0) === "label")
 check("sanitize strips heading markers", sanitize("## Title", 0) === "Title")
+check("detect language pt", detectLanguage("Olá, isto é um teste em português.") === "pt")
+check("detect language en", detectLanguage("Hello, this is a test in English.") === "en")
 
 // 4. Transcription against a mock OpenAI-compatible endpoint.
 let auth = ""

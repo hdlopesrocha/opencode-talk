@@ -33,14 +33,16 @@ DEFAULT_VOICES = {
 
 
 def choose_voice() -> str:
-    explicit = os.environ.get("OPENCODE_VOICE_EDGE_VOICE")
-    if explicit:
-        return explicit
-    value = (os.environ.get("OPENCODE_VOICE_TTS_VOICE") or "pt").strip()
-    if "-" in value and value.lower().endswith("neural"):
-        return value
-    key = value.lower()
-    return DEFAULT_VOICES.get(key) or DEFAULT_VOICES.get(key.split("-")[0]) or "pt-PT-RaquelNeural"
+    for key_name in ("OPENCODE_VOICE_EDGE_VOICE", "OPENCODE_VOICE_TTS_VOICE"):
+        value = (os.environ.get(key_name) or "").strip()
+        if not value:
+            continue
+        if "-" in value and value.lower().endswith("neural"):
+            return value
+        mapped = DEFAULT_VOICES.get(value.lower()) or DEFAULT_VOICES.get(value.lower().split("-")[0])
+        if mapped:
+            return mapped
+    return "pt-PT-RaquelNeural"
 
 
 def rate() -> str:

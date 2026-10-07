@@ -92,6 +92,10 @@ export interface VoiceConfig {
   ttsVoice?: string
   /** spd-say rate, -100..100. */
   ttsRate: number
+  /** Auto-detect the language and pick a pt/en voice per message. */
+  ttsAuto: boolean
+  /** Voice for English messages (edge voice name, e.g. en-US-AriaNeural). */
+  ttsVoiceEn: string
   /** Command for engine="command"; the text is written to its stdin. */
   ttsCommand?: string
   /** Shell used for ttsCommand. */
@@ -265,6 +269,12 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
       "pt",
     ),
     ttsRate: asNum(firstDefined(o.ttsRate, env("OPENCODE_VOICE_TTS_RATE")), 0),
+    ttsAuto: asBool(firstDefined(o.ttsAuto, env("OPENCODE_VOICE_TTS_AUTO")), true),
+    ttsVoiceEn: firstDefined(
+      asString(o.ttsVoiceEn, undefined),
+      env("OPENCODE_VOICE_TTS_VOICE_EN"),
+      "en-US-AriaNeural",
+    ) as string,
     ttsCommand,
     ttsShell: firstDefined(asString(o.ttsShell, undefined), platform() === "win32" ? "cmd" : "sh") as string,
     ttsMaxChars: Math.max(0, asNum(firstDefined(o.ttsMaxChars, env("OPENCODE_VOICE_TTS_MAX")), 1500)),

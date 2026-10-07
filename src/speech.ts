@@ -6,13 +6,66 @@ import { node, platform } from "./node.js"
  *
  * Utterances are serialized through a single queue so overlapping agent text
  * parts do not talk over each other. Engines:
- *   - "spd-say": speech-dispatcher (espeak-ng backend); works with no download.
+ *   - "spd-say": speech-dispatcher (espeak-ng backend).
  *   - "command": any command that reads the text on stdin and plays audio, e.g.
- *                `piper -m /path/pt_PT.onnx -f - | paplay`
+ *                the bundled edge-tts wrapper (`scripts/edge_tts_play.py`).
+ *
+ * When `tts.auto` is on, the language is detected per message and an English or
+ * Portuguese voice is used accordingly.
  */
 
 let chain: Promise<unknown> = Promise.resolve()
 let current: import("node:child_process").ChildProcess | undefined
+
+const EN_WORDS = new Set([
+  "the", "and", "you", "your", "yours", "this", "that", "these", "those", "with", "without",
+  "for", "from", "are", "is", "was", "were", "be", "been", "have", "has", "had", "will",
+  "would", "can", "could", "should", "may", "might", "must", "not", "but", "they", "them",
+  "there", "here", "what", "when", "where", "which", "who", "how", "why", "please", "thanks",
+  "thank", "hello", "hi", "yes", "no", "ok", "okay", "done", "error", "warning", "file",
+  "files", "code", "test", "tests", "build", "run", "running", "install", "update", "note",
+  "let", "use", "using", "add", "added", "need", "want", "see", "now", "then", "also",
+])
+
+const PT_WORDS = new Set([
+  "não", "nao", "está", "esta", "estás", "estou", "você", "voce", "para", "com", "uma", "uns",
+  "umas", "isso", "isto", "aquilo", "também", "tambem", "já", "ja", "muito", "muita", "obrigado",
+  "obrigada", "olá", "ola", "sim", "então", "entao", "porque", "quando", "onde", "como", "fazer",
+  "feito", "ficheiro", "ficheiros", "erro", "teste", "testes", "executar", "instalar", "atualizar",
+  "código", "codigo", "vou", "vamos", "aqui", "ali", "depois", "antes", "mais", "menos", "será",
+  "sera", "seu", "sua", "nosso", "nossa", "estão", "estao", "é", "são", "sao", "tem", "têm",
+  "tenho", "pode", "podem", "quero", "preciso", "voz", "texto", "mensagem", "mensagens",
+])
+
+/** Very small heuristic: which language does this text look like? */
+export function detectLanguage(text: string): "pt" | "en" | undefined {
+  const lower = text.toLowerCase()
+  const words = lower.match(/[a-zà-ÿ]+/g) ?? []
+  let pt = 0
+  let en = 0
+  for (const word of words) {
+    if (PT_WORDS.has(word)) pt++
+    if (EN_WORDS.has(word)) en++
+  }
+  // Portuguese-specific letters are a strong signal.
+  if (/[ãõçáéíóúâêôà]/.test(lower)) pt += 2
+  if (pt === 0 && en === 0) return undefined
+  return pt >= en ? "pt" : "en"
+}
+
+function pickVoice(cfg: VoiceConfig, text: string): { voice?: string; lang?: string } {
+  // An explicit edge voice name disables auto-selection.
+  if (cfg.ttsVoice && cfg.ttsVoice.toLowerCase().endsWith("neural")) {
+    return { voice: cfg.ttsVoice }
+  }
+  if (!cfg.ttsAuto) {
+    return { voice: cfg.ttsVoice, lang: cfg.ttsVoice }
+  }
+  const lang = detectLanguage(text)
+  if (lang === "en") return { voice: cfg.ttsVoiceEn, lang: "en" }
+  if (lang === "pt") return { voice: cfg.ttsVoice, lang: "pt" }
+  return { voice: cfg.ttsVoice, lang: cfg.ttsVoice }
+}
 
 export function speak(cfg: VoiceConfig, raw: string): Promise<void> {
   if (!cfg.tts) return Promise.resolve()
@@ -54,15 +107,21 @@ export function sanitize(text: string, maxChars: number): string {
 
 async function utter(cfg: VoiceConfig, text: string): Promise<void> {
   const { cp } = await node()
+  const picked = pickVoice(cfg, text)
   if (cfg.ttsEngine === "command" && cfg.ttsCommand) {
-    return runCommand(cp, cfg, text)
+    return runCommand(cp, cfg, text, picked.voice)
   }
-  return spdSay(cp, cfg, text)
+  return spdSay(cp, cfg, text, picked.lang ?? cfg.ttsVoice)
 }
 
-async function spdSay(cp: typeof import("node:child_process"), cfg: VoiceConfig, text: string): Promise<void> {
+async function spdSay(
+  cp: typeof import("node:child_process"),
+  cfg: VoiceConfig,
+  text: string,
+  lang: string | undefined,
+): Promise<void> {
   const args = ["-w"]
-  if (cfg.ttsVoice) args.push("-l", cfg.ttsVoice)
+  if (lang) args.push("-l", lang)
   if (cfg.ttsRate) args.push("-r", String(cfg.ttsRate))
   args.push("-e") // read the text from stdin
   current = cp.spawn("spd-say", args, { stdio: ["pipe", "ignore", "ignore"] })
@@ -71,10 +130,17 @@ async function spdSay(cp: typeof import("node:child_process"), cfg: VoiceConfig,
   current = undefined
 }
 
-async function runCommand(cp: typeof import("node:child_process"), cfg: VoiceConfig, text: string): Promise<void> {
+async function runCommand(
+  cp: typeof import("node:child_process"),
+  cfg: VoiceConfig,
+  text: string,
+  voice: string | undefined,
+): Promise<void> {
   const command = (cfg.ttsCommand ?? "").replaceAll("{text}", text)
   const args = platform() === "win32" ? ["/d", "/s", "/c", command] : ["-c", command]
-  current = cp.spawn(cfg.ttsShell, args, { stdio: ["pipe", "ignore", "ignore"] })
+  const baseEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
+  const env = voice ? { ...baseEnv, OPENCODE_VOICE_EDGE_VOICE: voice } : baseEnv
+  current = cp.spawn(cfg.ttsShell, args, { stdio: ["pipe", "ignore", "ignore"], env })
   current.stdin?.end(text)
   await waitExit(current)
   current = undefined

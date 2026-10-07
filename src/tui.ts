@@ -145,7 +145,9 @@ export default Plugin.define({
         options: [
           { title: "Transcrição local (faster-whisper, sem chave)", value: "local" },
           { title: "Transcrição via API — definir chave", value: "api" },
-          { title: "Voz do TTS", value: "tts" },
+          { title: "Voz do TTS (português)", value: "tts" },
+          { title: "Voz do TTS (inglês)", value: "tts-en" },
+          { title: "Deteção automática de idioma (pt/en)", value: "tts-auto" },
           { title: "Ligar/desligar TTS", value: "tts-toggle" },
           { title: "Mostrar configuração atual", value: "show" },
         ],
@@ -183,6 +185,20 @@ export default Plugin.define({
         saveConfigFile({ ttsVoice: voice.trim() || "pt" })
         refresh()
         toast(`Voz TTS: ${voice.trim() || "pt"}`, "success")
+      } else if (choice === "tts-en") {
+        const voice = await context.ui.dialog.prompt({
+          title: "Voz do TTS (inglês)",
+          description: "Voz edge para inglês (ex.: en-US-AriaNeural, en-GB-SoniaNeural)",
+          value: String(cfg.ttsVoiceEn ?? "en-US-AriaNeural"),
+        })
+        if (voice === undefined) return
+        saveConfigFile({ ttsVoiceEn: voice.trim() || "en-US-AriaNeural" })
+        refresh()
+        toast(`Voz EN: ${voice.trim() || "en-US-AriaNeural"}`, "success")
+      } else if (choice === "tts-auto") {
+        saveConfigFile({ ttsAuto: !cfg.ttsAuto })
+        refresh()
+        toast(cfg.ttsAuto ? "Deteção automática: ligada" : "Deteção automática: desligada", "success")
       } else if (choice === "tts-toggle") {
         saveConfigFile({ tts: !cfg.tts })
         refresh()

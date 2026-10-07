@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { createInterface } from "node:readline"
 import { fileURLToPath } from "node:url"
 import { node, platform } from "./node.js"
@@ -6,6 +9,19 @@ import { node, platform } from "./node.js"
  * Real-time (live) transcription: a recorder streams raw PCM into Vosk, which
  * emits partial and final text as you speak.
  */
+
+const VOSK_MODELS: Record<string, string> = {
+  pt: "vosk-model-small-pt-0.3",
+  en: "vosk-model-small-en-us-0.15",
+  fr: "vosk-model-small-fr-0.22",
+}
+
+function voskModelDir(lang: string): string {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+  const override = env?.[`OPENCODE_VOICE_VOSK_MODEL_${lang.toUpperCase()}`]
+  if (override) return override
+  return join(homedir(), ".cache", "opencode-voice", "vosk", VOSK_MODELS[lang] ?? VOSK_MODELS.en)
+}
 
 export interface LiveOptions {
   /** Language model to use: "pt", "en" or "fr". */
@@ -53,6 +69,11 @@ export async function startLive(options: LiveOptions): Promise<LiveHandle> {
   const rate = options.rate ?? 16000
   const python = fileURLToPath(new URL("../.venv/bin/python", import.meta.url))
   const script = fileURLToPath(new URL("../scripts/vosk_stream.py", import.meta.url))
+
+  const model = voskModelDir(options.lang)
+  if (!existsSync(model)) {
+    throw new Error(`Vosk model for '${options.lang}' not found at ${model} — run scripts/vosk_models.sh`)
+  }
 
   let recorder: ChildProcess | undefined
   const failures: string[] = []

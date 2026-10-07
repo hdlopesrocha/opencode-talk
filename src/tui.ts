@@ -4,6 +4,7 @@ import { resolveConfig } from "./config.js"
 import { configFilePath, loadConfigFile, saveConfigFile } from "./configfile.js"
 import { LiveTranscript } from "./live.js"
 import { startRecording, type Recording } from "./recorder.js"
+import { setMuted } from "./speech.js"
 import { startLive, type LiveHandle } from "./stream.js"
 import { transcribe } from "./transcribe.js"
 
@@ -99,6 +100,7 @@ export default Plugin.define({
         if (cfg.maxDuration > 0) {
           autoStop = setTimeout(() => void finish(), cfg.maxDuration * 1000)
         }
+        setMuted(true)
       } catch (error) {
         recording = undefined
         live = undefined
@@ -180,6 +182,7 @@ export default Plugin.define({
         } finally {
           if (activeRecording && !cfg.keepAudio) await activeRecording.abort()
           setLiveCaption("")
+          setMuted(false)
         }
       } catch (error) {
         toast(`Voice failed — ${(error as Error).message}`, "error", 7000)
@@ -327,6 +330,8 @@ export default Plugin.define({
     const cancelWords = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
     const submitWords = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
     const startWords = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
+    const liveWords = new Set(["live", "realtime", "tempo-real", "tempo_real"])
+    const batchWords = new Set(["batch", "normal", "lote"])
 
     async function cancelRecording() {
       const activeRecording = recording
@@ -345,6 +350,7 @@ export default Plugin.define({
       } catch {
         // ignore
       }
+      setMuted(false)
       toast("Gravação cancelada", "warning", 2500)
     }
 
@@ -352,6 +358,18 @@ export default Plugin.define({
       const arg = String(input ?? "").trim().toLowerCase()
       if (cancelWords.has(arg)) {
         void cancelRecording()
+        return
+      }
+      if (liveWords.has(arg)) {
+        saveConfigFile({ live: !cfg.live })
+        refresh()
+        toast(cfg.live ? "Modo tempo real (live) ligado" : "Modo batch ligado", "success")
+        return
+      }
+      if (batchWords.has(arg)) {
+        saveConfigFile({ live: false })
+        refresh()
+        toast("Modo batch ligado", "success")
         return
       }
       if (submitWords.has(arg)) {
@@ -379,7 +397,7 @@ export default Plugin.define({
           id: "voice.input.toggle",
           title: "Voice input",
           description:
-            "Voice input: /voice toggles; /voice start, /voice submit, /voice stop",
+            "Voice input: /voice toggles; /voice start, /voice submit, /voice stop, /voice live",
           group: "Voice",
           bind: cfg.keybind === false ? false : cfg.keybind,
           palette: true,

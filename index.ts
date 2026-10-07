@@ -2,13 +2,15 @@ import { Plugin } from "@opencode/plugin"
 import { resolveConfig } from "./src/config.js"
 import { saveConfigFile } from "./src/configfile.js"
 import { startRecording, type Recording } from "./src/recorder.js"
-import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
+import { claimOnce, isSpeakerOwner, setMuted, speak, stopSpeaking } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
 /** `/voice <arg>` subcommands. */
 const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
 const SUBMIT_WORDS = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
 const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
+const LIVE_WORDS = new Set(["live", "realtime", "tempo-real", "tempo_real"])
+const BATCH_WORDS = new Set(["batch", "normal", "lote"])
 
 /** `/tts <arg>` subcommands. */
 const TTS_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
@@ -71,6 +73,7 @@ export default Plugin.define({
         }
       } finally {
         await active.abort()
+        setMuted(false)
       }
     }
 
@@ -81,6 +84,7 @@ export default Plugin.define({
       try {
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
         target = { sessionID, prompt, delivery }
+        setMuted(true)
         if (cfg.maxDuration > 0) {
           timer = setTimeout(() => void finish().catch(() => {}), cfg.maxDuration * 1000)
         }
@@ -99,18 +103,28 @@ export default Plugin.define({
       }
       target = undefined
       await active.abort()
+      setMuted(false)
     }
 
     await ctx.command.transform((editor) => {
       editor.add({
         name: "voice",
         description:
-          "Voice input. `/voice` toggles (start, then stop & send); `/voice start` records, `/voice submit` stops & sends, `/voice stop` cancels",
+          "Voice input. `/voice` toggles; `/voice start|submit|stop`; `/voice live` toggles real-time mode",
         execute: async ({ sessionID, prompt, delivery }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?voice\b/, "").trim()
           if (CANCEL_WORDS.has(arg)) {
             if (recording) await cancel()
+            return
+          }
+          if (LIVE_WORDS.has(arg)) {
+            refresh()
+            saveConfigFile({ live: !cfg.live })
+            return
+          }
+          if (BATCH_WORDS.has(arg)) {
+            saveConfigFile({ live: false })
             return
           }
           if (SUBMIT_WORDS.has(arg)) {

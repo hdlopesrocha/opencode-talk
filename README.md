@@ -145,6 +145,11 @@ Override the command binding in `cli.json`:
    `/voice submit`.
 5. To **cancel** (discard, send nothing), run `/voice stop` (`cancel`, `abort`,
    `parar` also work).
+6. Switch modes on the fly with `/voice live` (real-time caption) or
+   `/voice batch`.
+
+While recording, **TTS is muted automatically** so the microphone never hears
+the agent's own voice.
 
 Recording also stops automatically after `maxDuration` seconds (default 120).
 
@@ -165,10 +170,10 @@ Changes apply immediately — the plugin re-reads `voice.json` on every use.
 
 ### Real-time (live) mode
 
-Enable it in `/voice-setup` → **“Ligar modo tempo real (live)”**, or set
-`OPENCODE_VOICE_LIVE=1`. While you speak, the growing transcript is shown as a
-live caption **above the composer**; when you stop, the final text is sent.
-`/voice stop` still cancels.
+Enable it with **`/voice live`** (toggle), in `/voice-setup` → **“Ligar modo
+tempo real (live)”**, or `OPENCODE_VOICE_LIVE=1`. While you speak, the growing
+transcript is shown as a live caption **above the composer**; when you stop, the
+final text is sent. `/voice batch` switches back; `/voice stop` still cancels.
 
 Live mode uses **Vosk** (offline streaming) and needs a small per-language model.
 Pick the language in `/voice-setup` → **“Língua do modo live”**, or with

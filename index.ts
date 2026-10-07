@@ -67,15 +67,18 @@ export default Plugin.define({
       target = undefined
       const shouldSend = sendOverride ?? cfg.autosend
 
-      const { file } = await active.stop()
+      const { file, durationMs } = await active.stop()
       try {
+        if (durationMs < cfg.minDuration * 1000) {
+          throw new Error("recording too short — speak a little longer")
+        }
         if (cfg.status && current) {
           await ctx.session.synthetic({ sessionID: current.sessionID, text: "mic to text..." }).catch(() => {})
         }
         const text = (await transcribe(cfg, file)).trim()
         if (!text) return
         const finalText = [cfg.prefix, text, cfg.suffix]
-          .map((part) => part.trim())
+          .map((part) => String(part ?? "").trim())
           .filter(Boolean)
           .join(" ")
 

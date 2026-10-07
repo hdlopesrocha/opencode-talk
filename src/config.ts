@@ -253,8 +253,8 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
     autosend: asBool(firstDefined(o.autosend, o.autoSend, env("OPENCODE_VOICE_AUTOSEND")), false),
     status: asBool(firstDefined(o.status, env("OPENCODE_VOICE_STATUS")), false),
     delivery,
-    prefix: firstDefined(asString(o.prefix, undefined), "") as string,
-    suffix: firstDefined(asString(o.suffix, undefined), "") as string,
+    prefix: asString(firstDefined(o.prefix, env("OPENCODE_VOICE_PREFIX")), "") as string,
+    suffix: asString(firstDefined(o.suffix, env("OPENCODE_VOICE_SUFFIX")), "") as string,
 
     polish: asBool(o.polish, false),
     polishPrompt: firstDefined(

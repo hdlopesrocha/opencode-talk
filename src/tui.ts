@@ -115,7 +115,7 @@ export default Plugin.define({
           if (cfg.polish && sessionID) text = await polish(sessionID, text)
 
           const finalText = [cfg.prefix, text, cfg.suffix]
-            .map((part) => part.trim())
+            .map((part) => String(part ?? "").trim())
             .filter(Boolean)
             .join(" ")
 

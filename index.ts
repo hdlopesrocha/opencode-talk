@@ -10,8 +10,20 @@ const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cance
 const SUBMIT_WORDS = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
 const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 
-/** Arguments to `/tts` that immediately stop the current speech. */
-const TTS_STOP_WORDS = new Set([...CANCEL_WORDS, "silence", "silencio", "silêncio", "quiet", "silenciar"])
+/** `/tts <arg>` subcommands. */
+const TTS_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
+const TTS_OFF_WORDS = new Set([
+  ...CANCEL_WORDS,
+  "off",
+  "desligar",
+  "desliga",
+  "disable",
+  "silence",
+  "silencio",
+  "silêncio",
+  "quiet",
+  "silenciar",
+])
 
 /**
  * Server half of the voice plugin.
@@ -115,16 +127,25 @@ export default Plugin.define({
       })
       editor.add({
         name: "tts",
-        description: "Toggle speech of agent messages (/tts stop to stop speaking)",
+        description: "Toggle speech of agent messages: /tts (toggle), /tts start, /tts stop",
         execute: async ({ prompt }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?tts\b/, "").trim()
-          if (TTS_STOP_WORDS.has(arg)) {
+          if (TTS_ON_WORDS.has(arg)) {
+            saveConfigFile({ tts: true })
+            refresh()
+            void speak(cfg, "Voz ligada.")
+            return
+          }
+          if (TTS_OFF_WORDS.has(arg)) {
             stopSpeaking()
+            saveConfigFile({ tts: false })
+            refresh()
             return
           }
           refresh()
           const next = !cfg.tts
+          if (!next) stopSpeaking()
           saveConfigFile({ tts: next })
           refresh()
           if (next) void speak(cfg, "Voz ligada.")

@@ -215,8 +215,9 @@ OPENCODE_VOICE_TTS_VOICE_EN=en-GB-SoniaNeural    # British English
 ### TTS commands
 
 - `/tts` — toggle speech on/off. When turning it on it says “Voz ligada.”
-- `/tts stop` (`cancel`, `silence`, `parar` also work) — stop speaking
-  immediately: cuts the current utterance and clears anything queued.
+- `/tts start` (`on`, `ligar`) — enable speech.
+- `/tts stop` (`off`, `silence`, `calar`, `parar`) — disable speech **and**
+  stop speaking immediately (cuts the current utterance and clears the queue).
 
 Works from any client, and persists to `~/.config/opencode/voice.json`.
 

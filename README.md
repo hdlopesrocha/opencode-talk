@@ -156,7 +156,7 @@ Run `/mic-setup` (or pick **Voice: configuração** from `Ctrl+P`) to:
 
 - switch between **local** transcription (no key needed) and the **cloud API**;
 - set the API key, `baseURL` and model — stored at
-  `~/.config/opencode/mic.json` (mode `0600`, **outside this repository**, so
+  `~/.config/opencode/voice.json` (mode `0600`, **outside this repository**, so
   it is never committed);
 - choose the Portuguese, English and French TTS voices and toggle language
   auto-detection;
@@ -214,14 +214,18 @@ OPENCODE_VOICE_TTS_VOICE=pt-PT-DuarteNeural      # male European Portuguese
 OPENCODE_VOICE_TTS_VOICE_EN=en-GB-SoniaNeural    # British English
 ```
 
-### TTS commands
+### Sound commands
 
 - `/sound` — toggle speech on/off. When turning it on it says “Voz ligada.”
 - `/sound start` (`on`, `ligar`) — enable speech.
-- `/sound stop` (`off`, `silence`, `calar`, `parar`) — disable speech **and**
-  stop speaking immediately (cuts the current utterance and clears the queue).
+- `/sound stop` (`off`, `desligar`) — disable speech **and** stop speaking
+  immediately (cuts the current utterance and clears the queue).
+- `/sound pause` (`silence`, `calar`, `parar`) — silence now, but keep speech on.
 
-Works from any client, and persists to `~/.config/opencode/mic.json`.
+Starting a recording (`/mic`, `/mic start`) automatically silences the current
+utterance so the microphone doesn't pick it up.
+
+Works from any client, and persists to `~/.config/opencode/voice.json`.
 
 ### Fully offline (Piper, optional)
 

@@ -145,8 +145,6 @@ Override the command binding in `cli.json`:
    `/voice submit`.
 5. To **cancel** (discard, send nothing), run `/voice stop` (`cancel`, `abort`,
    `parar` also work).
-6. Switch modes on the fly with `/voice live` (real-time caption) or
-   `/voice batch`.
 
 While recording, **TTS is muted automatically** so the microphone never hears
 the agent's own voice.
@@ -168,32 +166,23 @@ Run `/voice-setup` (or pick **Voice: configuração** from `Ctrl+P`) to:
 
 Changes apply immediately — the plugin re-reads `voice.json` on every use.
 
-### Real-time (live) mode
+### Configuring without the menu (web/desktop)
 
-Enable it with **`/voice live`** (toggle), in `/voice-setup` → **“Ligar modo
-tempo real (live)”**, or `OPENCODE_VOICE_LIVE=1`. While you speak, the growing
-transcript is shown as a live caption **above the composer**; when you stop, the
-final text is sent. `/voice batch` switches back; `/voice stop` still cancels.
+The `/voice-setup` menu, the `<leader>v` keybind and the toasts are
+**terminal-only** (web and desktop apps don't load terminal plugins). In those
+clients configure with the server command instead — it works everywhere:
 
-Live mode uses **Vosk** (offline streaming) and needs a small per-language model.
-Pick the language in `/voice-setup` → **“Língua do modo live”**, or with
-`OPENCODE_VOICE_LIVE_LANG=pt|en|fr`. Download the models with:
-
-```sh
-./scripts/vosk_models.sh
+```text
+/voice-setup tts on|off        # speech on/off
+/voice-setup auto on|off       # pt/en/fr auto-detection
+/voice-setup voice-pt <name>   # e.g. pt-PT-DuarteNeural
+/voice-setup voice-en <name>   # e.g. en-GB-SoniaNeural
+/voice-setup voice-fr <name>   # e.g. fr-FR-HenriNeural
+/voice-setup backend local|api
+/voice-setup key <key>         # store an API key (outside the repo)
 ```
 
-Models live in `~/.cache/opencode-voice/vosk/` (override per language with
-`OPENCODE_VOICE_VOSK_MODEL_PT` / `_EN` / `_FR`).
-
-| Variable                           | Default | Purpose                                |
-| ---------------------------------- | ------- | -------------------------------------- |
-| `OPENCODE_VOICE_LIVE`              | `0`     | Enable real-time mode.                 |
-| `OPENCODE_VOICE_LIVE_LANG`         | `pt`    | Live model language: `pt`, `en`, `fr`. |
-| `OPENCODE_VOICE_VOSK_MODEL_<LANG>` | –       | Explicit Vosk model path.              |
-
-> Live mode is a terminal (TUI) feature, because the caption is drawn in the TUI.
-> The server `/voice` command still does batch transcription in other clients.
+You can also edit `~/.config/opencode/voice.json` directly.
 
 ## Text-to-speech (agent messages)
 

@@ -9,8 +9,6 @@ import { transcribe } from "./src/transcribe.js"
 const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
 const SUBMIT_WORDS = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
 const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
-const LIVE_WORDS = new Set(["live", "realtime", "tempo-real", "tempo_real"])
-const BATCH_WORDS = new Set(["batch", "normal", "lote"])
 
 /** `/tts <arg>` subcommands. */
 const TTS_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
@@ -110,21 +108,12 @@ export default Plugin.define({
       editor.add({
         name: "voice",
         description:
-          "Voice input. `/voice` toggles; `/voice start|submit|stop`; `/voice live` toggles real-time mode",
+          "Voice input. `/voice` toggles; `/voice start` records; `/voice submit` stops & sends; `/voice stop` cancels",
         execute: async ({ sessionID, prompt, delivery }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?voice\b/, "").trim()
           if (CANCEL_WORDS.has(arg)) {
             if (recording) await cancel()
-            return
-          }
-          if (LIVE_WORDS.has(arg)) {
-            refresh()
-            saveConfigFile({ live: !cfg.live })
-            return
-          }
-          if (BATCH_WORDS.has(arg)) {
-            saveConfigFile({ live: false })
             return
           }
           if (SUBMIT_WORDS.has(arg)) {
@@ -163,6 +152,41 @@ export default Plugin.define({
           saveConfigFile({ tts: next })
           refresh()
           if (next) void speak(cfg, "Voz ligada.")
+        },
+      })
+      editor.add({
+        name: "voice-setup",
+        description:
+          "Configure voice from any client: tts on|off, auto on|off, voice-pt|voice-en|voice-fr <name>, backend local|api, key <key>",
+        execute: async ({ prompt }) => {
+          const raw = String((prompt as { text?: string })?.text ?? "").trim()
+          const parts = raw.split(/\s+/).filter(Boolean)
+          if (parts[0]?.replace(/^\//, "").toLowerCase() === "voice-setup") parts.shift()
+          const cmd = (parts.shift() ?? "").toLowerCase()
+          const value = parts.join(" ").trim()
+          const isOn = (v: string) => ["on", "1", "true", "sim", "yes", "ligar"].includes(v.toLowerCase())
+          const isOff = (v: string) => ["off", "0", "false", "nao", "não", "no", "desligar"].includes(v.toLowerCase())
+
+          refresh()
+          if (cmd === "tts") {
+            const next = isOn(value) ? true : isOff(value) ? false : !cfg.tts
+            if (!next) stopSpeaking()
+            saveConfigFile({ tts: next })
+            refresh()
+            if (next) void speak(cfg, "Voz ligada.")
+          } else if (cmd === "auto") {
+            saveConfigFile({ ttsAuto: isOn(value) ? true : isOff(value) ? false : !cfg.ttsAuto })
+          } else if (cmd === "voice-pt" && value) {
+            saveConfigFile({ ttsVoice: value })
+          } else if (cmd === "voice-en" && value) {
+            saveConfigFile({ ttsVoiceEn: value })
+          } else if (cmd === "voice-fr" && value) {
+            saveConfigFile({ ttsVoiceFr: value })
+          } else if (cmd === "backend" && (value === "local" || value === "api")) {
+            saveConfigFile({ backend: value })
+          } else if (cmd === "key" && value) {
+            saveConfigFile({ backend: "api", apiKey: value })
+          }
         },
       })
     })

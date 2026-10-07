@@ -104,11 +104,6 @@ export interface VoiceConfig {
   ttsShell: string
   /** Truncate spoken text to this many characters (0 = no limit). */
   ttsMaxChars: number
-
-  /** Real-time transcription while you speak, with a live caption in the TUI. */
-  live: boolean
-  /** Language model used by live mode: "pt", "en" or "fr". */
-  liveLang: string
 }
 
 function firstDefined<T>(...values: (T | undefined | null)[]): T | undefined {
@@ -290,14 +285,6 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
     ttsCommand,
     ttsShell: firstDefined(asString(o.ttsShell, undefined), platform() === "win32" ? "cmd" : "sh") as string,
     ttsMaxChars: Math.max(0, asNum(firstDefined(o.ttsMaxChars, env("OPENCODE_VOICE_TTS_MAX")), 1500)),
-
-    live: asBool(firstDefined(o.live, env("OPENCODE_VOICE_LIVE")), false),
-    liveLang: firstDefined(
-      asString(o.liveLang, undefined),
-      asString(o.liveLanguage, undefined),
-      env("OPENCODE_VOICE_LIVE_LANG"),
-      "pt",
-    ) as string,
   }
 }
 

@@ -1,0 +1,14 @@
+node_modules/
+.venv/
+__pycache__/
+*.wav
+*.log
+.DS_Store
+
+# never commit secrets
+voice.json
+.env
+.env.*
+*.key
+*.pem
+secrets*

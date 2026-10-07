@@ -1,0 +1,29 @@
+{
+  "name": "opencode-voice",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Voice input for OpenCode: record the microphone, transcribe it, and send it as a prompt.",
+  "exports": {
+    ".": "./index.ts",
+    "./tui": "./tui.ts"
+  },
+  "files": [
+    "index.ts",
+    "tui.ts",
+    "src"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx scripts/smoke.mts",
+    "test": "npm run typecheck && npm run smoke"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.0.24",
+    "@opencode/plugin": "2.0.24",
+    "@types/node": "^24.0.0",
+    "solid-js": "^1.9.16",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

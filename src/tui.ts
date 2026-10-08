@@ -76,7 +76,7 @@ export default Plugin.define({
       busy = true
       try {
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
-        toast("Recording… press again to stop and send", "info", 2500)
+        toast("Recording… press again to stop", "info", 2500)
         if (cfg.maxDuration > 0) {
           autoStop = setTimeout(() => void finish(), cfg.maxDuration * 1000)
         }
@@ -328,6 +328,44 @@ export default Plugin.define({
       toggle()
     }
 
+    const soundOnWords = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
+    const soundPauseWords = new Set(["pause", "silence", "silencio", "silêncio", "quiet", "hush", "calar", "parar", "para"])
+    const soundOffWords = new Set(["stop", "off", "desligar", "desliga", "disable", "cancel", "cancelar", "abort"])
+
+    async function pauseServerSpeech() {
+      const sid = activeSessionID()
+      if (sid) {
+        await context.client.session.command({ sessionID: sid, name: "sound", text: "pause" }).catch(() => {})
+      }
+    }
+
+    async function handleSound(input?: string) {
+      const arg = String(input ?? "").trim().toLowerCase()
+      if (soundOnWords.has(arg)) {
+        saveConfigFile({ tts: true })
+        refresh()
+        toast("Voz ligada", "success")
+        return
+      }
+      if (soundPauseWords.has(arg)) {
+        await pauseServerSpeech()
+        toast("Voz em pausa", "warning")
+        return
+      }
+      if (soundOffWords.has(arg)) {
+        await pauseServerSpeech()
+        saveConfigFile({ tts: false })
+        refresh()
+        toast("Voz desligada", "warning")
+        return
+      }
+      const next = !cfg.tts
+      if (!next) await pauseServerSpeech()
+      saveConfigFile({ tts: next })
+      refresh()
+      toast(next ? "Voz ligada" : "Voz desligada", next ? "success" : "warning")
+    }
+
     function toggle() {
       void (recording ? finish() : begin())
     }
@@ -363,8 +401,20 @@ export default Plugin.define({
             void configure()
           },
         },
+        {
+          id: "voice.sound.toggle",
+          title: "Sound: ligar/desligar voz",
+          description: "Voz do agente: /sound (toggle), /sound start, /sound stop, /sound pause",
+          group: "Voice",
+          bind: false,
+          palette: true,
+          slash: { name: "sound", arguments: true },
+          run: (input) => {
+            void handleSound(input)
+          },
+        },
       ],
-      bindings: ["voice.input.toggle", "voice.setup"],
+      bindings: ["voice.input.toggle", "voice.setup", "voice.sound.toggle"],
     }))
 
     return () => {

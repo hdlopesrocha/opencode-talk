@@ -100,6 +100,7 @@ export default Plugin.define({
         execute: async ({ sessionID, prompt, delivery }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?mic\b/, "").trim()
+          console.log(`[voice] /mic ${arg || "toggle"}${recording ? " (recording)" : ""}`)
           if (CANCEL_WORDS.has(arg)) {
             if (recording) await cancel()
             return
@@ -122,6 +123,7 @@ export default Plugin.define({
         execute: async ({ prompt }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?sound\b/, "").trim()
+          console.log(`[voice] /sound ${arg || "toggle"}`)
           if (TTS_ON_WORDS.has(arg)) {
             saveConfigFile({ tts: true })
             refresh()

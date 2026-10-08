@@ -9,8 +9,8 @@
 - **Text-to-speech (TTS)** — the main agent's replies are **spoken aloud** with
   neural voices (edge-tts), with automatic **pt / en / fr** language detection
   and a robotic `spd-say` fallback.
-- **Editable submit** — by default `/mic submit` opens an editable dialog so you
-  can fix the transcript before it is sent.
+- **Editable send** — by default `/mic send` opens an editable dialog so you can
+  fix the transcript before it is sent.
 - **Optional polish** — run the transcript through the model you are already
   using before sending.
 - Cross-platform capture: PipeWire, PulseAudio, ALSA, `sox`, or `ffmpeg`
@@ -39,7 +39,7 @@ agent reply ──▶ text-to-speech (edge-tts) ──▶ speakers
 
 Service/CLI plugins are two halves of one package: `index.ts` (server — the
 `/mic` and `/sound` commands, plus TTS playback) and `tui.ts` (the terminal UI —
-keybind, toasts, editable submit and the settings menu).
+keybind, toasts, editable send and the settings menu).
 
 ## Requirements
 
@@ -155,11 +155,12 @@ Override the command binding in `cli.json`:
    `/mic` (`/mic start` also works).
 3. A "Recording…" toast appears. Speak.
 4. Stop & transcribe — press the key again, run `/mic` (it toggles), or
-   `/mic submit`. By default this opens an **editable dialog** with the
+   `/mic send`. By default this opens an **editable dialog** with the
    transcript so you can fix it before sending (press Enter to send, Esc to
    discard). Set `OPENCODE_VOICE_SUBMIT=send` to send directly instead.
 5. To **cancel** (discard, send nothing), run `/mic abort` (`cancel`, `abort`,
    `parar` also work).
+6. Run `/mic help` (or `/sound help`) any time to see the command reference.
 
 Recording also stops automatically after `maxDuration` seconds (default 120).
 
@@ -173,7 +174,8 @@ Run `/mic-setup` (or pick **Voice: configuração** from `Ctrl+P`) to:
   it is never committed);
 - choose the Portuguese, English and French TTS voices and toggle language
   auto-detection;
-- enable/disable speech;
+- enable/disable speech, and choose whether the agent's reasoning ("thinking")
+  is spoken too;
 - review the current settings (the key is shown masked).
 
 Changes apply immediately — the plugin re-reads `voice.json` on every use.
@@ -183,9 +185,10 @@ Changes apply immediately — the plugin re-reads `voice.json` on every use.
 The plugin also reads the **main agent's** messages aloud:
 
 - **Only the main agent** — messages from subagent/child sessions are never spoken.
-- **Only assistant prose** — tool calls, shell/command output, and reasoning are not spoken. Code blocks, inline code, URLs and Markdown markup are stripped first so it reads like speech.
+- **Only assistant prose** — tool calls and shell/command output are not spoken. Code blocks, inline code, URLs and Markdown markup are stripped first so it reads like speech.
+- **Reasoning is opt-in** — the agent's grey "thinking" text is skipped unless you enable it with `OPENCODE_VOICE_TTS_REASONING=1` (or the settings menu). Off by default.
 - Runs in the **server** plugin, so it works in every client (TUI, desktop, web).
-- Utterances are queued, so overlapping text parts don't talk over each other.
+- Utterances are queued and serialized machine-wide, so agent messages and reasoning parts play one after another instead of talking over each other.
 
 The default engine is **edge-tts** — Microsoft's neural voices, which sound
 natural and include European Portuguese (`pt-PT-RaquelNeural`) and English
@@ -210,6 +213,7 @@ Configure with environment variables (set them before launching `opencode`, then
 | `OPENCODE_VOICE_TTS`           | `1`                    | Set to `0` to disable speech.                                      |
 | `OPENCODE_VOICE_TTS_ENGINE`    | auto (`command`)       | `command` (bundled edge-tts), `spd-say`, or your own command.      |
 | `OPENCODE_VOICE_TTS_AUTO`      | `1`                    | Auto-detect Portuguese/English and pick the matching voice.        |
+| `OPENCODE_VOICE_TTS_REASONING` | `0`                    | Set to `1` to also speak the agent's reasoning ("thinking") text.  |
 | `OPENCODE_VOICE_TTS_VOICE`     | `pt`                   | Portuguese voice: `pt`, `pt-br`, or a full edge voice name.        |
 | `OPENCODE_VOICE_TTS_VOICE_EN`  | `en-US-AriaNeural`     | Voice used for English messages.                                   |
 | `OPENCODE_VOICE_TTS_VOICE_FR`  | `fr-FR-DeniseNeural`   | Voice used for French messages.                                    |
@@ -234,6 +238,7 @@ OPENCODE_VOICE_TTS_VOICE_EN=en-GB-SoniaNeural    # British English
 - `/sound stop` (`off`, `desligar`) — disable speech **and** stop speaking
   immediately (cuts the current utterance and clears the queue).
 - `/sound pause` (`silence`, `calar`, `parar`) — silence now, but keep speech on.
+- `/sound help` (`ajuda`) — show the command usage.
 
 Starting a recording (`/mic`, `/mic start`) automatically silences the current
 utterance so the microphone doesn't pick it up.

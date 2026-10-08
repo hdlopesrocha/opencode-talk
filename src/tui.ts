@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { resolveConfig } from "./config.js"
 import { configFilePath, loadConfigFile, saveConfigFile } from "./configfile.js"
+import { MIC_HELP, SOUND_HELP } from "./help.js"
 import { startRecording, type Recording } from "./recorder.js"
 import { transcribe } from "./transcribe.js"
 
@@ -198,6 +199,7 @@ export default Plugin.define({
           { title: "Voz do TTS (francês) — texto livre", value: "tts-fr" },
           { title: "Línguas/vozes disponíveis (mostrar)", value: "langs" },
           { title: "Deteção automática de idioma (pt/en)", value: "tts-auto" },
+          { title: cfg.ttsReasoning ? "Não falar o raciocínio (thinking)" : "Falar o raciocínio (thinking)", value: "tts-reasoning" },
           { title: cfg.tts ? "Desligar TTS" : "Ligar TTS", value: "tts-toggle" },
           { title: "Mostrar configuração atual", value: "show" },
         ],
@@ -277,6 +279,10 @@ export default Plugin.define({
         saveConfigFile({ ttsAuto: !cfg.ttsAuto })
         refresh()
         toast(cfg.ttsAuto ? "Deteção automática: ligada" : "Deteção automática: desligada", "success")
+      } else if (choice === "tts-reasoning") {
+        saveConfigFile({ ttsReasoning: !cfg.ttsReasoning })
+        refresh()
+        toast(cfg.ttsReasoning ? "Raciocínio falado" : "Raciocínio silencioso", "success")
       } else if (choice === "tts-toggle") {
         saveConfigFile({ tts: !cfg.tts })
         refresh()
@@ -294,8 +300,9 @@ export default Plugin.define({
     }
 
     const cancelWords = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
-    const submitWords = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
+    const sendWords = new Set(["send", "submit", "enviar", "submeter", "terminar", "concluir"])
     const startWords = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
+    const helpWords = new Set(["help", "ajuda", "?"])
 
     async function cancelRecording() {
       const active = recording
@@ -311,11 +318,15 @@ export default Plugin.define({
 
     function handleRun(input?: string) {
       const arg = String(input ?? "").trim().toLowerCase()
+      if (helpWords.has(arg)) {
+        void context.ui.dialog.alert({ title: "Voice input", message: MIC_HELP })
+        return
+      }
       if (cancelWords.has(arg)) {
         void cancelRecording()
         return
       }
-      if (submitWords.has(arg)) {
+      if (sendWords.has(arg)) {
         if (recording) void finish()
         else toast("Nada a gravar", "warning", 2000)
         return
@@ -341,6 +352,10 @@ export default Plugin.define({
 
     async function handleSound(input?: string) {
       const arg = String(input ?? "").trim().toLowerCase()
+      if (helpWords.has(arg)) {
+        await context.ui.dialog.alert({ title: "Speech", message: SOUND_HELP })
+        return
+      }
       if (soundOnWords.has(arg)) {
         saveConfigFile({ tts: true })
         refresh()
@@ -378,7 +393,7 @@ export default Plugin.define({
           id: "voice.input.toggle",
           title: "Voice input",
           description:
-            "Voice input: /voice toggles; /voice start, /voice submit, /voice stop",
+            "Voice input: /mic toggles; /mic start, /mic send, /mic abort, /mic help",
           group: "Voice",
           bind: cfg.keybind === false ? false : cfg.keybind,
           palette: true,
@@ -404,7 +419,7 @@ export default Plugin.define({
         {
           id: "voice.sound.toggle",
           title: "Sound: ligar/desligar voz",
-          description: "Voz do agente: /sound (toggle), /sound start, /sound stop, /sound pause",
+          description: "Voz do agente: /sound (toggle), /sound start, /sound stop, /sound pause, /sound help",
           group: "Voice",
           bind: false,
           palette: true,

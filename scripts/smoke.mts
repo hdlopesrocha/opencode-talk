@@ -45,11 +45,24 @@ check("default binding", layers[0]?.commands?.[0]?.bind === "<leader>v")
 check("slash command", layers[0]?.commands?.[0]?.slash?.name === "mic")
 check("slash command parses on submit", layers[0]?.commands?.[0]?.slash?.arguments === true)
 
+// 1b. `/mic help` and `/sound help` show usage instead of acting.
+const alerts: string[] = []
+context.ui.dialog.alert = async (options: any) => {
+  alerts.push(String(options?.message ?? ""))
+}
+layers[0]?.commands?.[0]?.run("help")
+layers[0]?.commands?.[2]?.run("help")
+await new Promise((resolve) => setTimeout(resolve, 0))
+check("mic help shows usage", alerts.some((message) => message.includes("/mic send")), alerts)
+check("sound help shows usage", alerts.some((message) => message.includes("/sound pause")), alerts)
+
 // 2. Config resolution.
 check("explicit api backend", resolveConfig({ backend: "api" }).backend === "api")
 check("explicit local backend", resolveConfig({ backend: "local" }).backend === "local")
 check("default model", resolveConfig({ backend: "api" }).model === "gpt-4o-mini-transcribe")
 check("default keybind", resolveConfig({}).keybind === "<leader>v")
+check("reasoning speech off by default", resolveConfig({}).ttsReasoning === false)
+check("reasoning speech can be enabled", resolveConfig({ ttsReasoning: true }).ttsReasoning === true)
 
 // Bundled-engine auto-detection only when the venv actually exists.
 const bundledPython = fileURLToPath(new URL("../.venv/bin/python", import.meta.url))

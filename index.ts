@@ -1,14 +1,16 @@
 import { Plugin } from "@opencode/plugin"
 import { resolveConfig } from "./src/config.js"
 import { saveConfigFile } from "./src/configfile.js"
+import { MIC_HELP, SOUND_HELP } from "./src/help.js"
 import { startRecording, type Recording } from "./src/recorder.js"
 import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
-/** `/voice <arg>` subcommands. */
+/** `/mic <arg>` subcommands. */
 const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
-const SUBMIT_WORDS = new Set(["submit", "send", "enviar", "submeter", "terminar", "concluir"])
+const SEND_WORDS = new Set(["send", "submit", "enviar", "submeter", "terminar", "concluir"])
 const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
+const HELP_WORDS = new Set(["help", "ajuda", "?"])
 
 /** `/sound <arg>` subcommands. */
 const TTS_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
@@ -96,16 +98,20 @@ export default Plugin.define({
       editor.add({
         name: "mic",
         description:
-          "Microphone. `/mic` toggles (start, then stop & transcribe); `/mic start` records, `/mic submit` stops & transcribes, `/mic abort` cancels",
+          "Microphone. `/mic` toggles (start, then stop & transcribe); `/mic start` records, `/mic send` stops & transcribes, `/mic abort` cancels, `/mic help` shows usage",
         execute: async ({ sessionID, prompt, delivery }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?mic\b/, "").trim()
           console.log(`[voice] /mic ${arg || "toggle"}${recording ? " (recording)" : ""}`)
+          if (HELP_WORDS.has(arg)) {
+            console.log(MIC_HELP)
+            return
+          }
           if (CANCEL_WORDS.has(arg)) {
             if (recording) await cancel()
             return
           }
-          if (SUBMIT_WORDS.has(arg)) {
+          if (SEND_WORDS.has(arg)) {
             if (recording) await finish()
             return
           }
@@ -119,11 +125,16 @@ export default Plugin.define({
       })
       editor.add({
         name: "sound",
-        description: "Toggle speech of agent messages: /sound (toggle), /sound start, /sound stop, /sound pause",
+        description:
+          "Toggle speech of agent messages: /sound (toggle), /sound start, /sound stop, /sound pause, /sound help",
         execute: async ({ prompt }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?sound\b/, "").trim()
           console.log(`[voice] /sound ${arg || "toggle"}`)
+          if (HELP_WORDS.has(arg)) {
+            console.log(SOUND_HELP)
+            return
+          }
           if (TTS_ON_WORDS.has(arg)) {
             saveConfigFile({ tts: true })
             refresh()
@@ -152,8 +163,9 @@ export default Plugin.define({
 
     // Speak the MAIN agent's text aloud: only root sessions (never subagents),
     // and only assistant text parts (never tool calls, shell output or commands).
-    // The server can instantiate the plugin once per location, so dedupe events
-    // process-wide to speak each message exactly once.
+    // Reasoning ("thinking") parts are spoken too, but only when `ttsReasoning`
+    // is on (off by default). The server can instantiate the plugin once per
+    // location, so dedupe events process-wide to speak each message exactly once.
     const spokenKey = Symbol.for("opencode.voice.spokenEvents")
     const globalScope = globalThis as Record<symbol, unknown>
     if (!globalScope[spokenKey]) globalScope[spokenKey] = new Set<string>()
@@ -162,12 +174,16 @@ export default Plugin.define({
     const speech = new AbortController()
     void (async () => {
       for await (const event of ctx.event.subscribe({ signal: speech.signal })) {
-        if (event.type !== "session.text.ended") continue
+        if (event.type !== "session.text.ended" && event.type !== "session.reasoning.ended") continue
+        const reasoning = event.type === "session.reasoning.ended"
 
         const { sessionID, assistantMessageID, ordinal, text } = event.data
         if (!text || !text.trim()) continue
 
-        const key = `${sessionID}:${assistantMessageID}:${ordinal}`
+        refresh()
+        if (reasoning && !cfg.ttsReasoning) continue
+
+        const key = `${reasoning ? "reasoning" : "text"}:${sessionID}:${assistantMessageID}:${ordinal}`
         if (spoken.has(key)) continue
         spoken.add(key)
         if (spoken.size > 2000) spoken.clear()

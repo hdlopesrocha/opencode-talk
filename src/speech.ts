@@ -4,8 +4,9 @@ import { node, platform } from "./node.js"
 /**
  * Text-to-speech for the agent's messages.
  *
- * Utterances are serialized through a single queue so overlapping agent text
- * parts do not talk over each other. Engines:
+ * Utterances are serialized through a single queue, plus a machine-wide
+ * playback lock, so agent messages and reasoning parts play one after another
+ * instead of talking over each other. Engines:
  *   - "spd-say": speech-dispatcher (espeak-ng backend).
  *   - "command": any command that reads the text on stdin and plays audio, e.g.
  *                the bundled edge-tts wrapper (`scripts/edge_tts_play.py`).
@@ -26,6 +27,78 @@ function state(): SpeechState {
   const key = Symbol.for("opencode.voice.speech.state")
   if (!g[key]) g[key] = { queue: Promise.resolve(), generation: 0 } as SpeechState
   return g[key] as SpeechState
+}
+
+/**
+ * One utterance at a time, machine-wide. The promise queue above serializes
+ * `speak` calls inside one plugin instance, but OpenCode can load the plugin
+ * more than once (once per location, or on hot reload) and those instances do
+ * not share `globalThis`. This lock file makes sure only one instance is
+ * audible at any moment, so agent messages and reasoning parts play one after
+ * another instead of talking over each other.
+ */
+async function withPlaybackLock<T>(fn: () => Promise<T>): Promise<T> {
+  const { fs, os, path } = await node()
+  const proc = (globalThis as {
+    process?: {
+      pid?: number
+      kill?: (pid: number, signal?: number) => boolean
+      getuid?: () => number
+    }
+  }).process
+  const pid = proc?.pid ?? 0
+  const uid = proc?.getuid?.() ?? 0
+  const file = path.join(os.tmpdir(), `opencode-voice.playing-${uid}`)
+  const alive = (value: number): boolean => {
+    try {
+      proc?.kill?.(value, 0)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const staleAfter = 10 * 60 * 1000 // longer than any utterance can be
+  const deadline = Date.now() + 5 * 60 * 1000
+
+  for (;;) {
+    try {
+      const handle = await fs.open(file, "wx")
+      await handle.writeFile(`${pid} ${Date.now()}`)
+      await handle.close()
+      break
+    } catch {
+      // Someone else is playing, or a crashed process left the lock behind.
+      let steal = false
+      try {
+        const [owner, stamp] = (await fs.readFile(file, "utf8")).trim().split(/\s+/)
+        const age = Date.now() - Number(stamp)
+        steal = !Number(owner) || !alive(Number(owner)) || age > staleAfter
+      } catch {
+        steal = true // lock vanished between open and read
+      }
+      if (!steal && Date.now() > deadline) steal = true // never block speech forever
+      if (steal) {
+        try {
+          await fs.rm(file, { force: true })
+        } catch {
+          // ignore
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        continue
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150))
+    }
+  }
+
+  try {
+    return await fn()
+  } finally {
+    try {
+      await fs.rm(file, { force: true })
+    } catch {
+      // ignore
+    }
+  }
 }
 
 const EN_WORDS = new Set([
@@ -107,10 +180,35 @@ export function speak(cfg: VoiceConfig, raw: string): Promise<void> {
 export function stopSpeaking(): void {
   const st = state()
   st.generation++ // drop anything still queued
+  killTree(st.current)
+}
+
+/**
+ * Kill the current utterance and everything it spawned (shell → python →
+ * audio player). Killing only the shell would leave the player running, so the
+ * old audio would keep playing behind the next utterance.
+ */
+function killTree(child: import("node:child_process").ChildProcess | undefined): void {
+  if (!child?.pid) return
+  const proc = (globalThis as {
+    process?: { kill?: (pid: number, signal?: string | number) => boolean; platform?: string }
+  }).process
+  if (proc?.platform === "win32") {
+    try {
+      child.kill("SIGTERM")
+    } catch {
+      // ignore
+    }
+    return
+  }
   try {
-    st.current?.kill("SIGTERM")
+    proc?.kill?.(-child.pid, "SIGTERM") // negative pid = the child's process group
   } catch {
-    // ignore
+    try {
+      child.kill("SIGTERM")
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -212,10 +310,12 @@ export function sanitize(text: string, maxChars: number): string {
 async function utter(cfg: VoiceConfig, text: string): Promise<void> {
   const { cp } = await node()
   const picked = pickVoice(cfg, text)
-  if (cfg.ttsEngine === "command" && cfg.ttsCommand) {
-    return runCommand(cp, cfg, text, picked.voice)
-  }
-  return spdSay(cp, cfg, text, picked.lang ?? cfg.ttsVoice)
+  return withPlaybackLock(async () => {
+    if (cfg.ttsEngine === "command" && cfg.ttsCommand) {
+      return runCommand(cp, cfg, text, picked.voice)
+    }
+    return spdSay(cp, cfg, text, picked.lang ?? cfg.ttsVoice)
+  })
 }
 
 async function spdSay(
@@ -229,7 +329,10 @@ async function spdSay(
   if (cfg.ttsRate) args.push("-r", String(cfg.ttsRate))
   args.push("-e") // read the text from stdin
   const st = state()
-  st.current = cp.spawn("spd-say", args, { stdio: ["pipe", "ignore", "ignore"] })
+  st.current = cp.spawn("spd-say", args, {
+    stdio: ["pipe", "ignore", "ignore"],
+    detached: platform() !== "win32", // own process group, so stopSpeaking can kill it whole
+  })
   st.current.stdin?.end(text)
   await waitExit(st.current)
   st.current = undefined
@@ -246,7 +349,11 @@ async function runCommand(
   const baseEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
   const env = voice ? { ...baseEnv, OPENCODE_VOICE_EDGE_VOICE: voice } : baseEnv
   const st = state()
-  st.current = cp.spawn(cfg.ttsShell, args, { stdio: ["pipe", "ignore", "ignore"], env })
+  st.current = cp.spawn(cfg.ttsShell, args, {
+    stdio: ["pipe", "ignore", "ignore"],
+    env,
+    detached: platform() !== "win32", // own process group, so stopSpeaking can kill it whole
+  })
   st.current.stdin?.end(text)
   await waitExit(st.current)
   st.current = undefined

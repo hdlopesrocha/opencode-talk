@@ -94,6 +94,8 @@ export interface VoiceConfig {
   ttsRate: number
   /** Auto-detect the language and pick a pt/en voice per message. */
   ttsAuto: boolean
+  /** Also speak the agent's reasoning ("thinking") text. Off by default. */
+  ttsReasoning: boolean
   /** Voice for English messages (edge voice name, e.g. en-US-AriaNeural). */
   ttsVoiceEn: string
   /** Voice for French messages (edge voice name, e.g. fr-FR-DeniseNeural). */
@@ -275,6 +277,15 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
     ),
     ttsRate: asNum(firstDefined(o.ttsRate, env("OPENCODE_VOICE_TTS_RATE")), 0),
     ttsAuto: asBool(firstDefined(o.ttsAuto, env("OPENCODE_VOICE_TTS_AUTO")), true),
+    ttsReasoning: asBool(
+      firstDefined(
+        o.ttsReasoning,
+        o.ttsThinking,
+        env("OPENCODE_VOICE_TTS_REASONING"),
+        env("OPENCODE_VOICE_TTS_THINKING"),
+      ),
+      false,
+    ),
     ttsVoiceEn: firstDefined(
       asString(o.ttsVoiceEn, undefined),
       env("OPENCODE_VOICE_TTS_VOICE_EN"),

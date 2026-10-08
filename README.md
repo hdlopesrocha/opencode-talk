@@ -46,8 +46,8 @@ keybind, toasts, editable submit and the settings menu).
 - OpenCode v2 (`opencode --version` → `2.x`).
 - A microphone and one capture tool: `pw-record` (PipeWire), `parecord`
   (PulseAudio), `arecord` (ALSA), `sox`, or `ffmpeg`.
-- For local STT: `faster-whisper` in the bundled `.venv` (already set up here)
-  or any Whisper CLI.
+- For local STT: `faster-whisper` in the bundled `.venv` (set up by
+  `npm install`) or any Whisper CLI.
 - For cloud STT: an API key for your provider.
 
 ## Install
@@ -61,6 +61,12 @@ what makes it appear in OpenCode's plugin/extension list:
   "plugins": ["/home/hdlrocha/opencode-voice"]
 }
 ```
+
+Run `npm install` once in this directory: its `postinstall` hook creates the
+bundled `.venv` and installs the Python engines (`edge-tts` for speech,
+`faster-whisper` for transcription). Re-run it any time with `npm run setup`
+(or `OPENCODE_VOICE_SKIP_SETUP=1 npm install` to skip the Python step, e.g. in
+CI).
 
 The plugin is **self-configuring**: at load it looks for
 `.venv/bin/python` and `scripts/whisper_transcribe.py` next to itself, and uses
@@ -289,11 +295,13 @@ environment variables above instead.
 
 ### Local faster-whisper (default here)
 
-The bundled wrapper is used automatically. Recreate the environment with:
+The bundled wrapper is used automatically. `npm install` (postinstall) or
+`npm run setup` creates the environment with both engines:
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install faster-whisper
+npm install                               # dev deps + .venv (edge-tts, faster-whisper)
+npm run setup                             # run just the Python setup again
+OPENCODE_VOICE_SKIP_SETUP=1 npm install   # skip the Python step (CI)
 ```
 
 The model is downloaded on first use and cached by Hugging Face. Tune it with
@@ -369,7 +377,7 @@ With the `cli.json` install:
 ## Development
 
 ```sh
-npm install        # optional: only needed for editor types and the checks below
+npm install        # dev deps + the bundled Python engines (.venv)
 npm run typecheck  # tsc --noEmit
 npm test           # typecheck + a smoke test (plugin setup, config, mock STT)
 ```

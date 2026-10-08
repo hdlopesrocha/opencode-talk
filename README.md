@@ -1,38 +1,45 @@
-# opencode-voice
+# opencode-talk
 
-Voice input for [OpenCode](https://opencode.ai). Press a key, speak, and the
-transcript is sent as a prompt to your active session.
+**Two-way voice for [OpenCode](https://opencode.ai): talk to the agent
+(speech-to-text) and let the agent talk back (text-to-speech).**
 
-- **Toggle recording** with `<leader>v` (default) or the `/mic` slash command.
-- **Local speech-to-text** by default, via a bundled `faster-whisper` engine
-  (offline, private, no API key).
-- **Cloud STT** through any OpenAI-compatible `/audio/transcriptions` endpoint
-  (OpenAI, Groq, …) is also supported.
-- **Optional polish** step that runs the transcript through the model you are
-  already using before sending it.
+- **Speech-to-text (STT)** — press a key or run `/mic`, speak, and the transcript
+  becomes a prompt. Local `faster-whisper` by default (offline, private, no API
+  key), or any OpenAI-compatible `/audio/transcriptions` endpoint.
+- **Text-to-speech (TTS)** — the main agent's replies are **spoken aloud** with
+  neural voices (edge-tts), with automatic **pt / en / fr** language detection
+  and a robotic `spd-say` fallback.
+- **Editable submit** — by default `/mic submit` opens an editable dialog so you
+  can fix the transcript before it is sent.
+- **Optional polish** — run the transcript through the model you are already
+  using before sending.
 - Cross-platform capture: PipeWire, PulseAudio, ALSA, `sox`, or `ffmpeg`
   (AVFoundation on macOS, DirectShow on Windows).
 
-> OpenCode's TUI plugin API does not expose a way to write into the prompt
-> composer, so the recognized text is delivered as a prompt with
-> `session.prompt` instead of being typed into the input box. Set
-> `confirm: true` if you want to review it in a dialog before it is sent.
+> OpenCode's plugin API can't write into the prompt composer, so the transcript
+> is delivered with `session.prompt` (after an editable dialog). TTS, toasts and
+> the `/mic-setup` settings menu are **terminal-TUI** features; the web/desktop
+> clients only run the server commands.
 
 ## How it works
 
 ```
-keybind / slash ──▶ recorder (temp WAV) ──▶ speech-to-text ──▶ session.prompt
+/mic  ──▶ recorder (temp WAV) ──▶ speech-to-text ──▶ (edit) ──▶ session.prompt
+agent reply ──▶ text-to-speech (edge-tts) ──▶ speakers
 ```
 
 1. `src/recorder.ts` spawns the first available capture tool and writes a mono
    16 kHz WAV to a temp directory.
 2. `src/transcribe.ts` runs the configured backend (local `faster-whisper` by
    default, or an OpenAI-compatible HTTP endpoint).
-3. `src/tui.ts` submits the text to the active session (optionally previewed and
-   optionally cleaned up by the current model first).
+3. `src/tui.ts` / `index.ts` deliver the text to the active session (optionally
+   edited in a dialog and optionally cleaned up by the current model first).
+4. `src/speech.ts` speaks the main agent's replies with `edge-tts`
+   (auto-detecting pt/en/fr) or `spd-say`, with a single, deduplicated queue.
 
-Service/CLI plugins are two halves of one package: `index.ts` (server, a no-op
-kept so the plugin can be registered normally) and `tui.ts` (the terminal UI).
+Service/CLI plugins are two halves of one package: `index.ts` (server — the
+`/mic` and `/sound` commands, plus TTS playback) and `tui.ts` (the terminal UI —
+keybind, toasts, editable submit and the settings menu).
 
 ## Requirements
 

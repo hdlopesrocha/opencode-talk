@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizePeer } from "./nostr/keys.js";
 import { readTokenFile } from "./telegram/tokenFile.js";
+import { normalizeJid, readAccountFile } from "./xmpp/accountFile.js";
 
 /**
  * The background service's configured env does not always reach plugin
@@ -40,11 +41,24 @@ export interface AppConfig {
   telegramBotToken: string;
   telegramTokenFile: string;
   telegramStateFile: string;
+  /** Shared single-poller lock (default: <repo>/data/telegram-bot-<token>.lock). */
+  telegramLockFile: string;
   telegramAllowedUsers: Set<number>;
   telegramProjects: string[];
   sessionMappingFile: string;
   telegramChatProjectsFile: string;
   nostrProjectsFile: string;
+  xmppJid: string;
+  xmppPassword: string;
+  xmppAccountFile: string;
+  xmppStateFile: string;
+  /** Globally authorized contacts, normalized bare lowercase JIDs. */
+  xmppAllowedUsers: Set<string>;
+  xmppProjects: string[];
+  xmppMappingFile: string;
+  xmppChatProjectsFile: string;
+  /** MUC room hosting one thread per session (XMPP_MUC env, state file wins). */
+  xmppRoom?: string;
   mediaDir: string;
   mediaMaxMb: number;
   nostrRelays: string[];
@@ -78,6 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     (env["TELEGRAM_TOKEN_FILE"] ?? "./data/telegram-token").trim() || "./data/telegram-token";
   const telegramStateFile =
     (env["TELEGRAM_STATE_FILE"] ?? "./data/telegram-state.json").trim() || "./data/telegram-state.json";
+  const telegramLockFile = (env["TELEGRAM_LOCK_FILE"] ?? "").trim();
   const telegramAllowedUsers = parseAllowedUsers(env["TELEGRAM_ALLOWED_USERS"] ?? "");
   const telegramProjects = (env["TELEGRAM_PROJECTS"] ?? "")
     .split(",")
@@ -106,6 +121,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const nostrPeersFile =
     (env["NOSTR_PEERS_FILE"] ?? "./data/nostr-peers.json").trim() || "./data/nostr-peers.json";
   const nostrBlossomServer = (env["NOSTR_BLOSSOM_SERVER"] ?? "").trim();
+  const xmppAccount = resolveXmppAccount(env);
+  const xmppAccountFile =
+    (env["XMPP_ACCOUNT_FILE"] ?? "./data/xmpp-account").trim() || "./data/xmpp-account";
+  const xmppStateFile =
+    (env["XMPP_STATE_FILE"] ?? "./data/xmpp-state.json").trim() || "./data/xmpp-state.json";
+  const xmppAllowedUsers = parseAllowedJids(env["XMPP_ALLOWED_USERS"] ?? "");
+  const xmppProjectsRaw = (env["XMPP_PROJECTS"] ?? "").trim();
+  const xmppProjects = (xmppProjectsRaw || (env["TELEGRAM_PROJECTS"] ?? ""))
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const xmppMappingFile =
+    (env["XMPP_MAPPING_FILE"] ?? "./data/xmpp-mapping.json").trim() || "./data/xmpp-mapping.json";
+  const xmppChatProjectsFile =
+    (env["XMPP_PROJECTS_FILE"] ?? "./data/xmpp-projects.json").trim() || "./data/xmpp-projects.json";
+  const xmppRoom = (env["XMPP_MUC"] ?? "").trim() || undefined;
   const logLevel = (env["LOG_LEVEL"] ?? "info").trim() || "info";
   return {
     apiHost,
@@ -119,6 +150,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     telegramBotToken,
     telegramTokenFile,
     telegramStateFile,
+    telegramLockFile,
     telegramAllowedUsers,
     telegramProjects,
     sessionMappingFile,
@@ -131,6 +163,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nostrKeysFile,
     nostrPeersFile,
     nostrBlossomServer,
+    xmppJid: xmppAccount.jid,
+    xmppPassword: xmppAccount.password,
+    xmppAccountFile,
+    xmppStateFile,
+    xmppAllowedUsers,
+    xmppProjects,
+    xmppMappingFile,
+    xmppChatProjectsFile,
+    ...(xmppRoom ? { xmppRoom } : {}),
     logLevel,
   };
 }
@@ -149,6 +190,30 @@ function resolveTelegramToken(env: NodeJS.ProcessEnv): string {
   if (fromEnv) return fromEnv;
   const file = (env["TELEGRAM_TOKEN_FILE"] ?? "./data/telegram-token").trim() || "./data/telegram-token";
   return readTokenFile(file);
+}
+
+function parseAllowedJids(raw: string): Set<string> {
+  const out = new Set<string>();
+  for (const part of raw.split(",")) {
+    const bare = normalizeJid(part);
+    if (bare && bare.includes("@")) out.add(bare);
+    else if (part.trim()) console.warn(`[config] ignoring invalid XMPP_ALLOWED_USERS entry: ${part.trim()}`);
+  }
+  return out;
+}
+
+/** Env XMPP_JID + XMPP_PASSWORD (XMPP_BOT_TOKEN alias) wins; otherwise the account file. */
+function resolveXmppAccount(env: NodeJS.ProcessEnv): { jid: string; password: string } {
+  const jidFromEnv = (env["XMPP_JID"] ?? "").trim();
+  const passwordFromEnv = (env["XMPP_PASSWORD"] ?? env["XMPP_BOT_TOKEN"] ?? "").trim();
+  if (jidFromEnv && passwordFromEnv) return { jid: normalizeJid(jidFromEnv), password: passwordFromEnv };
+  const file = (env["XMPP_ACCOUNT_FILE"] ?? "./data/xmpp-account").trim() || "./data/xmpp-account";
+  const stored = readAccountFile(file);
+  const jid = jidFromEnv ? normalizeJid(jidFromEnv) : stored.jid ? normalizeJid(stored.jid) : "";
+  const password = passwordFromEnv || stored.password;
+  // Single-line password file + env JID covers `/xmpp <token>` without a prior full login.
+  if (jid && password) return { jid, password };
+  return { jid: "", password: "" };
 }
 
 export { required };

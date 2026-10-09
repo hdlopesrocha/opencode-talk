@@ -75,6 +75,8 @@ Plugin-native (inside OpenCode, no Telegram needed):
 
 /nostr <your-npub>
 # → ✅ paired … DMs to <session-npub> now reach this session.
+#   The session also DMs you a welcome from its unique npub with the model
+#   and reasoning already selected; reply with a pick to change them.
 ```
 
 Or pre-authorize globally with `NOSTR_ALLOWED_NPUBS` (first authorized DM
@@ -106,8 +108,11 @@ Then DM the session npub from your Nostr client (Amethyst, Damus, Coracle,
 talk to the new session. `/projects` lists project directories (seeded by
 `TELEGRAM_PROJECTS`, session dirs join automatically); `/project <number>`
 scopes `/sessions` and `/new` to one directory; `/menu` shows projects plus
-the action list; `/nostr off|on` halts/resumes relay traffic (persists). The
-first authorized DM pairs automatically and gets this
+the action list; `/nostr off|on` halts/resumes relay traffic (persists). In
+plugin-native mode, pairing with `/nostr <your-npub>` (from the TUI or the
+in-process Telegram bot) immediately DMs you a welcome from the session's
+unique npub showing the model + reasoning already selected. The first
+authorized DM pairs automatically and gets this
 menu as a welcome — including a model + reasoning ask: reply with just a
 pick (a number from `/models`, `<provider/model> [effort]`, or an effort
 alone), anything else prompts the agent. The same ask follows `/new`. Any other `/command` is sent

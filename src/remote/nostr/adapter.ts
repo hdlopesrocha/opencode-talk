@@ -1,4 +1,5 @@
 import { createLogger } from "../logger.js";
+import { GITHUB_PROFILE } from "../branding.js";
 import type { FetchedMedia } from "../client.js";
 import type { ModelRef, SessionEvent, SessionModel, SessionSummary } from "../types.js";
 import { ChatProjectStore } from "../chatProjects.js";
@@ -129,6 +130,45 @@ export class NostrAdapter {
     return identity;
   }
 
+  /**
+   * Proactive pairing welcome, sent from the session's unique stored key:
+   * announces its npub, shows the model + reasoning already selected, and the
+   * command menu. Arms the one-shot model ask so a bare pick in the peer's
+   * next DM switches the session.
+   */
+  async sendWelcome(sessionID: string, peerHex: string): Promise<void> {
+    const identity = this.ensureSession(sessionID);
+    const modelLine = await this.describeCurrentModel(sessionID);
+    await this.sendToPeer(
+      sessionID,
+      peerHex,
+      `✅ Paired — this session's npub answers your DMs from now on.\n\n` +
+        `${modelLine}\n\n` +
+        `Reply with just a pick from /models to change it, or write anything else to prompt the agent.\n\n` +
+        HELP_TEXT +
+        `\n\nGitHub: ${GITHUB_PROFILE}`,
+    );
+    if (this.api.listModels) this.pendingModel.set(peerHex, sessionID);
+    log.info(`Welcome DM to ${peerHex.slice(0, 16)}… from ${identity.npub.slice(0, 20)}…`);
+  }
+
+  /** One-line "Model: … (reasoning: …) — already selected." for welcomes. */
+  private async describeCurrentModel(sessionID: string): Promise<string> {
+    try {
+      const s = await this.api.getSession(sessionID);
+      if (s.model) {
+        return (
+          `Model: ${s.model.providerID}/${s.model.id}` +
+          (s.model.variant ? ` (reasoning: ${s.model.variant})` : "") +
+          ` — already selected.`
+        );
+      }
+    } catch {
+      /* session info unavailable — fall back to the generic line */
+    }
+    return `Model + reasoning: not selected yet — see /models.`;
+  }
+
   async start(signal: AbortSignal): Promise<void> {
     await this.rescan();
     if (signal.aborted) return;
@@ -246,7 +286,8 @@ export class NostrAdapter {
         `✅ Paired — this session's npub answers your DMs from now on.\n\n` +
           `Which model + reasoning? Reply with just a pick — a number from /models, ` +
           `\`<provider/model> [${MODEL_EFFORTS.join("|")}]` +
-          `\`, or an effort alone — or write anything else to prompt the agent.\n\n${HELP_TEXT}`,
+          `\`, or an effort alone — or write anything else to prompt the agent.\n\n${HELP_TEXT}` +
+          `\n\nGitHub: ${GITHUB_PROFILE}`,
       );
     }
   }

@@ -668,6 +668,7 @@ describe("NostrAdapter projects", () => {
       const welcome = decryptPublished(transport, 1, peerSecret);
       expect(welcome).toContain("Paired");
       expect(welcome).toContain("/projects");
+      expect(welcome).toContain("GitHub: https://github.com/hdlopesrocha");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -787,6 +788,66 @@ describe("NostrAdapter model ask", () => {
       await tick();
       expect(state.sent).toHaveLength(2);
       expect(state.switched).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("NostrAdapter pairing welcome", () => {
+  it("DMs the welcome from the session's stored key with model + reasoning already selected", async () => {
+    const dir = tmpDir();
+    try {
+      const session = summary("ses_1");
+      session.model = { providerID: "anthropic", id: "claude-haiku-5-5", variant: "high" };
+      const state: FakeApiState = {
+        sessions: [session],
+        sent: [],
+        aborted: [],
+        createdOpts: [],
+        switched: [],
+        media: new Map(),
+      };
+      const peerSecret = generateSecretKey();
+      const peerHex = getPublicKey(peerSecret);
+      const { transport, keys, adapter } = makeAdapter(dir, state, { allowed: [peerHex] });
+      await adapter.sendWelcome("ses_1", peerHex);
+      expect(transport.published).toHaveLength(1);
+      expect(transport.published[0]!.event.pubkey).toBe(keys.get("ses_1")!.pubkey);
+      const welcome = decryptPublished(transport, 0, peerSecret);
+      expect(welcome).toContain("Paired");
+      expect(welcome).toContain("Model: anthropic/claude-haiku-5-5 (reasoning: high) — already selected");
+      expect(welcome).toContain("/projects");
+      expect(welcome).toContain("GitHub: https://github.com/hdlopesrocha");
+      // A bare pick right after the welcome switches the model.
+      transport.emit(dmFromPeer(keys, "ses_1", peerSecret, "2"));
+      await tick();
+      expect(state.switched).toEqual([
+        { sessionID: "ses_1", model: { providerID: "google", id: "gemini-2.5-flash" } },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to a generic model line when the session has none yet", async () => {
+    const dir = tmpDir();
+    try {
+      const state: FakeApiState = {
+        sessions: [summary("ses_1")],
+        sent: [],
+        aborted: [],
+        createdOpts: [],
+        switched: [],
+        media: new Map(),
+      };
+      const peerSecret = generateSecretKey();
+      const peerHex = getPublicKey(peerSecret);
+      const { transport, adapter } = makeAdapter(dir, state, { allowed: [peerHex] });
+      await adapter.sendWelcome("ses_1", peerHex);
+      const welcome = decryptPublished(transport, 0, peerSecret);
+      expect(welcome).toContain("not selected yet");
+      expect(welcome).toContain("/models");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

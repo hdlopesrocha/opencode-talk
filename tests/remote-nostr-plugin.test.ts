@@ -5,7 +5,7 @@ import { finalizeEvent, generateSecretKey, getPublicKey, nip04 } from "nostr-too
 import type { Event as NostrEvent, Filter } from "nostr-tools";
 import { describe, expect, it, vi } from "vitest";
 import { NostrAdapter } from "../src/remote/nostr/adapter.js";
-import { SessionKeyStore, normalizePeer } from "../src/remote/nostr/keys.js";
+import { SessionKeyStore, hexToNpub, normalizePeer } from "../src/remote/nostr/keys.js";
 import { loadBotState } from "../src/remote/telegram/botState.js";
 import { PeerStore } from "../src/remote/nostr/peers.js";
 import {
@@ -252,6 +252,48 @@ describe("setupPluginNostr /nostr command", () => {
           /* ignore */
         }
       }
+      delete (globalThis as Record<symbol, unknown>)[Symbol.for("opencode-talk.nostr-bridge")];
+    }
+  });
+
+  it("sends the welcome DM from the session's unique key on /nostr <npub>", async () => {
+    const dir = tmpDir();
+    try {
+      const transport = new FakeTransport();
+      const keys = new SessionKeyStore(join(dir, "keys.json"));
+      const peers = new PeerStore(join(dir, "peers.json"));
+      const { ctx, commands } = makePluginCtx();
+      const peerSecret = generateSecretKey();
+      const peerHex = getPublicKey(peerSecret);
+      const stop = await setupPluginNostr(ctx, {
+        relays: ["wss://relay.test"],
+        allowedPeers: new Set(),
+        transport,
+        keys,
+        peers,
+      });
+      const cmd = commands.find((c) => c.name === "nostr")!;
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        await cmd.execute({ sessionID: "ses_1", prompt: { text: `/nostr ${hexToNpub(peerHex)}` } });
+        await tick();
+        expect(peers.get("ses_1")).toBe(peerHex);
+        const identity = keys.get("ses_1")!;
+        expect(transport.published).toHaveLength(1);
+        const ev = transport.published[0]!.event;
+        expect(ev.pubkey).toBe(identity.pubkey);
+        expect(ev.tags).toContainEqual(["p", peerHex]);
+        const welcome = nip04.decrypt(peerSecret, identity.pubkey, ev.content);
+        expect(welcome).toContain("Paired");
+        expect(welcome).toContain("Model: anthropic/claude-haiku-5-5 — already selected");
+        expect(welcome).toContain("/projects");
+        expect(welcome).toContain("GitHub: https://github.com/hdlopesrocha");
+      } finally {
+        logSpy.mockRestore();
+      }
+      stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
       delete (globalThis as Record<symbol, unknown>)[Symbol.for("opencode-talk.nostr-bridge")];
     }
   });

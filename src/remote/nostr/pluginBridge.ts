@@ -184,6 +184,11 @@ export interface NostrControl {
   stop(): void;
   isRunning(): boolean;
   ensureSession(sessionID: string): void;
+  /**
+   * DM the pairing welcome from the session's unique key (model + reasoning
+   * already selected). False when the relay adapter is not running.
+   */
+  welcome(sessionID: string, peerHex: string): Promise<boolean>;
 }
 
 export function createNostrControl(ctx: any, overrides: PluginNostrOverrides = {}): NostrControl {
@@ -254,6 +259,11 @@ export function createNostrControl(ctx: any, overrides: PluginNostrOverrides = {
     stop,
     isRunning: () => adapter !== undefined,
     ensureSession: (sessionID: string) => adapter?.ensureSession(sessionID),
+    welcome: async (sessionID: string, peerHex: string): Promise<boolean> => {
+      if (!adapter) return false;
+      await adapter.sendWelcome(sessionID, peerHex);
+      return true;
+    },
   };
 }
 
@@ -284,14 +294,15 @@ export async function setupNostrLocation(ctx: any, deps: NostrLocationDeps): Pro
     await ctx.command.transform((editor: any) => {
       editor.add({
         name: "nostr",
-        description: "Nostr bridge: /nostr shows session npub, /nostr <your-npub> pairs a peer, /nostr status|help|on|off",
+        description: "Nostr bridge: /nostr shows session npub, /nostr <your-npub> pairs a peer and DMs the welcome, /nostr status|help|on|off",
         execute: async ({ sessionID, prompt }: { sessionID: string; prompt: { text?: string } }) => {
           const arg = parseNostrArg(String(prompt?.text ?? ""));
           const first = arg.split(/\s+/)[0] ?? "";
           if (/^help$/i.test(first)) {
             console.log(
               `[nostr] /nostr — show this session's npub + paired peer\n` +
-                `/nostr <your-npub> — authorize your key (npub1… or 64-hex)\n` +
+                `/nostr <your-npub> — pair your key; a welcome DM follows with the\n` +
+                `   model + reasoning already selected (npub1… or 64-hex)\n` +
                 `/nostr status — same as bare /nostr\n` +
                 `/nostr off|stop — halt relay traffic (persists)\n` +
                 `/nostr on|start — resume relay traffic`,
@@ -331,11 +342,14 @@ export async function setupNostrLocation(ctx: any, deps: NostrLocationDeps): Pro
             return;
           }
           peers.set(sessionID, hex);
+          const welcomed = await control.welcome(sessionID, hex);
           console.log(
-            `[nostr] paired ${hexToNpub(hex)} → DMs to ${identity.npub} now reach session ${sessionID}.` +
-              (control.isRunning()
-                ? ""
-                : `\n(note: NOSTR_RELAYS is not set — restart OpenCode with relays configured to receive DMs.)`),
+            `[nostr] paired ${hexToNpub(hex)} → DMs to ${identity.npub} now reach session ${sessionID}.\n` +
+              (welcomed
+                ? `[nostr] welcome DM sent from ${identity.npub} — model and reasoning already selected; reply with a pick to change them.`
+                : control.isRunning()
+                  ? `[nostr] welcome DM could not be sent — check the relay logs.`
+                  : `[nostr] relay bridge not running — /nostr on to resume, or restart OpenCode with NOSTR_RELAYS set.`),
           );
         },
       });

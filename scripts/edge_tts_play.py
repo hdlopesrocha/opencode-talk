@@ -11,6 +11,7 @@ Environment:
   OPENCODE_VOICE_EDGE_VOICE  explicit edge voice (highest priority)
 """
 
+import argparse
 import asyncio
 import os
 import shutil
@@ -83,8 +84,22 @@ async def synth(text: str, path: str, voice: str, rate_value: str) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Synthesize stdin with edge-tts (play or save).")
+    parser.add_argument("--out", default=None, help="Save MP3 to PATH instead of playing it.")
+    args = parser.parse_args()
+
     text = sys.stdin.read().strip()
     if not text:
+        return 0
+
+    if args.out:
+        # File mode for bridges (e.g. Telegram voice messages): no playback,
+        # no spd-say fallback — the caller decides what to do on failure.
+        try:
+            asyncio.run(synth(text, args.out, choose_voice(), rate()))
+        except Exception as error:  # noqa: BLE001
+            print(f"edge-tts failed: {error}", file=sys.stderr)
+            return 1
         return 0
 
     path = None

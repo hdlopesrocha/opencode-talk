@@ -14,6 +14,8 @@ import {
 import { SessionKeyStore, hexToNpub, normalizePeer } from "../nostr/keys.js";
 import { PeerStore } from "../nostr/peers.js";
 import { SessionMapping } from "./sessionMapping.js";
+import { PollLock, defaultPollLockFile } from "./pollLock.js";
+import { GITHUB_PROFILE } from "../branding.js";
 
 const log = createLogger("telegram-bot");
 
@@ -57,6 +59,23 @@ export async function main(): Promise<void> {
     log.warn("TELEGRAM_ALLOWED_USERS is empty — all Telegram users will be denied.");
   }
 
+  // One getUpdates consumer per token, shared with the plugin-native bot.
+  const lock = new PollLock(
+    defaultPollLockFile(cfg.telegramBotToken, cfg.telegramLockFile),
+    cfg.telegramBotToken,
+  );
+  const holder = lock.acquire();
+  if (holder) {
+    throw new Error(
+      `Another process (pid ${holder.pid}) already polls this bot token — stop it first ` +
+        `(e.g. the OpenCode plugin bot) or use a different token.`,
+    );
+  }
+  const releaseLock = (): void => lock.release();
+  process.on("SIGINT", releaseLock);
+  process.on("SIGTERM", releaseLock);
+  process.on("exit", releaseLock);
+
   const api = new SessionApiClient({ baseUrl: cfg.apiBaseUrl, token: cfg.apiToken });
   const mapping = new SessionMapping(cfg.sessionMappingFile);
   const nostrKeys = new SessionKeyStore(cfg.nostrKeysFile);
@@ -83,7 +102,7 @@ export async function main(): Promise<void> {
   });
 
   bot.command("start", async (ctx) => {
-    await safeReply(ctx, `👋 OpenCode remote ready.\n\n${HELP_TEXT}`);
+    await safeReply(ctx, `👋 OpenCode remote ready.\n\n${HELP_TEXT}\n\nGitHub: ${GITHUB_PROFILE}`);
   });
 
   bot.command("help", async (ctx) => {

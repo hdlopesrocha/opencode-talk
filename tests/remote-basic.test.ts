@@ -76,6 +76,19 @@ describe("normalizeNativeEvent", () => {
     expect(fin[0]?.delta).toBe(false);
   });
 
+  it("forwards session renames with the new title", () => {
+    const upd = normalizeNativeEvent({
+      seq: 9,
+      nativeType: "session.updated",
+      data: { sessionID: "ses_1", info: { title: "New name" } },
+    });
+    expect(upd[0]?.type).toBe("session.updated");
+    expect(upd[0]?.title).toBe("New name");
+    expect(
+      normalizeNativeEvent({ seq: 10, nativeType: "session.updated", data: { sessionID: "ses_1", info: {} } }),
+    ).toEqual([]);
+  });
+
   it("ignores events without a session and noisy streams", () => {
     expect(normalizeNativeEvent({ seq: 7, nativeType: "model.updated", data: {} })).toEqual([]);
     expect(

@@ -7,7 +7,9 @@ Two modes share the same chat↔session mapping file:
   `TELEGRAM_BOT_TOKEN` + `TELEGRAM_ALLOWED_USERS` in the environment that
   launches `opencode`, restart — no Session API or `dev:bot` process needed.
   Link chats from OpenCode with `/telegram <chat-id>` or from Telegram with
-  `/use`.
+  `/use`. Or register the **"Opencode Talk" group** with
+  `/telegram <bot-token> <group-id>` and get one forum topic per session
+  (see "Group mode" below).
 - **Standalone bot:** the external `src/remote/telegram/bot.ts` process as a
   pure Session API client (needs `npm run dev:api` + `npm run dev:bot`).
   Steps 4–5 below cover this mode.
@@ -19,8 +21,10 @@ beyond the Bot API. Run the Session API first (`npm run dev:api`).
 
 1. Message [@BotFather](https://t.me/BotFather) on Telegram → `/newbot`.
 2. Copy the token (`123456:ABC-...`).
-3. Optionally `/setprivacy` → disable privacy if you want group messages
-   (1:1 chats work with default settings).
+3. Optionally `/setprivacy` → disable privacy. In groups, promote the bot to
+   admin (see "Group mode" below) — admin bots receive all messages either
+   way, so privacy only matters if the bot is not an admin. 1:1 chats work
+   with default settings.
 
 ## 2. Find your user/chat ID
 
@@ -43,10 +47,12 @@ SESSION_MAPPING_FILE=./data/session-mapping.json
 ```
 
 Plugin-native alternative (no env): with the remote plugin installed, run
-`/telegram <bot-token>` inside OpenCode — it verifies the token with
-Telegram, saves it locked-down (`TELEGRAM_TOKEN_FILE`, mode 0600), connects
-on the spot, and DM's every allowed user the project picker so they can
-select a project right away. Env `TELEGRAM_BOT_TOKEN` wins when both exist. Prefer
+`/telegram <bot-token> <group-id>` inside OpenCode — it verifies the token
+with Telegram, saves it locked-down (`TELEGRAM_TOKEN_FILE`, mode 0600),
+connects on the spot, registers the group, and creates the current session's
+topic. Without a group id (`/telegram <bot-token>`) it DM's every allowed
+user the project picker so they can select a project right away. Env
+`TELEGRAM_BOT_TOKEN` wins when both exist. Prefer
 env when you have it: chat history keeps whatever you paste into a command.
 
 Note: the background service's configured env does not always reach plugin
@@ -93,17 +99,46 @@ Keep both `start:api` and `start:bot` running (systemd unit, tmux, etc.).
 <any other /command> → sent to the session as-is for OpenCode to run
 ```
 
-Set `TELEGRAM_PROJECTS=/path/a,/path/b` (env that launches `opencode`)
-so `/menu` offers your projects; session working directories join the list
-automatically. The plugin has no session-list API, so `/menu` and
-`/sessions` show known sessions (previously linked, created, or seen in the
-event stream) — brand-new TUI sessions appear after their first event.
+Set `TELEGRAM_PROJECTS=/path/a,/path/b` (env that launches `opencode`) to add
+directories that were never opened in OpenCode. `/projects` and `/menu` list
+every OpenCode project (the same list as the TUI/desktop project picker),
+plus session working directories. The plugin has no session-list API, so
+`/menu` and `/sessions` show known sessions (previously linked, created, or
+seen in the event stream) — brand-new TUI sessions appear after their first
+event.
 
 After a session is selected or created (`/menu`, `/use`, `/new`), the bot
 asks which model + reasoning effort to use: reply with just a pick — a
 number from `/models`, `<provider/model> [effort]`, or an effort alone
 (`low|medium|high|…`). Anything else goes to the agent as a prompt, and the
 ask is one-shot.
+
+### Editing and deleting messages
+
+- **Edit** a message that was submitted as a prompt (plain text or a voice
+  transcript): the bot stops the session's current run (`interrupt`, then
+  waits for it to go idle) and submits the edited text as a fresh prompt.
+- **Delete**: Telegram only reports deletions to bots for **Telegram
+  Business** accounts (`deleted_business_messages`); regular chats never
+  notify bots, so deletions cannot be detected there. When a deletion is
+  reported, the bot stops the session that ran the deleted prompt.
+  OpenCode's plugin API does not expose message removal (only `interrupt`),
+  so the prompt stays in the session history — stopping is the closest
+  equivalent.
+
+### Voice notes and audio files
+
+Voice notes, audio messages and audio files sent "without compression"
+(documents with an `audio/*` type) are downloaded and submitted to the
+session as a prompt in private chats and in session topics alike:
+
+- The audio is transcribed (local `faster-whisper` by default) and the
+  transcript becomes the prompt text.
+- The audio file itself is attached to the prompt (a copy is written to
+  `<tmp>/opencode-talk-telegram/`), so the agent receives the audio even when
+  transcription is unavailable or fails — in that case the prompt says so.
+- The standalone `dev:bot` process only replies that voice is unsupported;
+  audio needs the plugin-native bot.
 
 Progress arrives by editing one `🤖 …` message; the final result is posted
 (split into ≤4096-char messages). Images the agent sends (screenshots,
@@ -116,6 +151,50 @@ installed, `/telegram` shows chats linked to the current session and
 `/telegram <chat-id>` links one (same file the bot reads, no restart
 needed). Useful when you already know the chat id from step 2.
 
+## Group mode: one topic per session
+
+Instead of many private chats, host every session in one Telegram group with
+forum topics. Full walkthrough (BotFather, group, permissions):
+[README → Telegram group](../README.md#telegram-group-one-topic-per-opencode-session-recommended).
+
+Quick version:
+
+1. Create the bot with [@BotFather](https://t.me/BotFather) (`/newbot`) and
+   keep it joinable (`/setjoingroups` → Enable); disabling privacy
+   (`/setprivacy` → Disable) is optional because an admin bot receives all
+   group messages anyway.
+2. Create a group named **Opencode Talk**, add the bot, and enable **Topics**
+   in the group settings.
+3. Promote the bot to admin (**Edit → Administrators → Add Admin**) with
+   **Manage Topics** enabled (required) plus **Send Messages** (default); add
+   **Delete Messages** if you want it to tidy progress messages.
+4. Get the group id (negative, e.g. `-1001234567890`): add
+   [@userinfobot](https://t.me/userinfobot) to the group (it posts the id —
+   remove it afterwards), or read `getUpdates` after a group message (the bot
+   must be admin or have privacy disabled).
+5. In OpenCode run `/telegram <bot-token> <group-id>` — or connect the bot
+   with `/telegram <bot-token>` and the group with
+   `/telegram group <group-id>`. The token is verified, saved locked-down,
+   the bot connects, the group id is persisted in `TELEGRAM_STATE_FILE`, and
+   the current session's topic is created.
+6. From any session run `/telegram` — the bot creates (or reuses) a topic
+   named after the session, binds `group:topic` → session in
+   `SESSION_MAPPING_FILE`, seeds the topic's **project** from the session
+   working directory, and posts a first message with the **model + reasoning
+   already selected**.
+7. Write in a topic to prompt that session. Progress and final results stay
+   in the topic; `/projects`, `/project`, `/sessions`, `/use`, `/new`,
+   `/models`, `/model [effort]`, `/status`, `/abort` and `/nostr` all work
+   there. `/telegram status` is side-effect free.
+
+Notes:
+
+- Group mode needs the plugin-native bot (it creates topics through the same
+  polling loop); the standalone `dev:bot` process ignores topic mappings.
+- `TELEGRAM_ALLOWED_USERS` must contain your user id (group member).
+- Deleting a topic in Telegram leaves its mapping until you `/telegram
+  unlink <group:topic>` or pick another session in that topic.
+
 Nostr pairing needs the Nostr adapter running too (`npm run dev:nostr`) —
 see [docs/NOSTR_SETUP.md](NOSTR_SETUP.md).
 
@@ -124,6 +203,8 @@ see [docs/NOSTR_SETUP.md](NOSTR_SETUP.md).
 | Symptom | Fix |
 |---|---|
 | `⛔ Not authorized` | Add your id to `TELEGRAM_ALLOWED_USERS`, restart the bot |
+| Voice/audio in a group is ignored | The bot must be an admin or have privacy mode disabled to receive non-command group messages — see the group setup steps |
+| `Conflict: terminated by other getUpdates request` | Another process polls the same token — the standalone `npm run dev:bot` and a second OpenCode server (desktop app + background service) both count. The plugin's shared poll lock makes the first process poll and the others run in secondary mode (topic linking/sends still work). Two plugin installs need `TELEGRAM_LOCK_FILE` set to the same absolute path. |
 | `⚠️ Could not list sessions` | Session API down or `SESSION_API_TOKEN` mismatch — check `curl $BASE/health` |
 | `⚠️ Session unavailable` | Session was deleted in OpenCode — `/sessions` + `/use` a live one |
 | No progress updates | Bot's SSE stream to the Session API dropped — it reconnects with backoff; check API logs |

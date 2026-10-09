@@ -90,6 +90,14 @@ export function normalizeNativeEvent(input: NormalizedEventInput): SessionEvent[
   switch (nativeType) {
     case "session.created":
       return [{ ...base, id: `session.created:${sessionID}:${seq}`, type: "session.created" }];
+    case "session.updated": {
+      // Fires whenever the session record changes; only a real title change
+      // matters to consumers (the bot renames the bound forum topic).
+      const info = data["info"] as Record<string, unknown> | undefined;
+      const title = str(info?.["title"], "").trim();
+      if (!title) return [];
+      return [{ ...base, id: `session.updated:${sessionID}:${seq}`, type: "session.updated", title }];
+    }
     case "session.deleted":
       return [
         {

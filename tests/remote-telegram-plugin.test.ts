@@ -1,8 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { PluginTelegramBot, TelegramBotApi, setupPluginTelegramBot } from "../src/remote/telegram/pluginBot.js";
+import { listOpenCodeProjectDirectories } from "../src/remote/opencode/projects.js";
+import { PollLock, tokenLockHash } from "../src/remote/telegram/pollLock.js";
 import { SessionMapping } from "../src/remote/telegram/sessionMapping.js";
 import { ChatProjectStore } from "../src/remote/chatProjects.js";
 import { parseEffortOnly, parseModelPick } from "../src/remote/projects.js";
@@ -46,13 +49,64 @@ function makeFetch(queue: unknown[]) {
       msgId += 1;
       return { json: async () => ({ ok: true, result: { message_id: msgId } }) } as Response;
     }
+    if (method === "createForumTopic") {
+      msgId += 1;
+      return { json: async () => ({ ok: true, result: { message_thread_id: msgId } }) } as Response;
+    }
     return { json: async () => ({ ok: true, result: true }) } as Response;
   }) as unknown as typeof fetch;
   return { fetchImpl, sent };
 }
 
-function update(id: number, chat: number, from: number, text: string): unknown {
-  return { update_id: id, message: { message_id: id, chat: { id: chat }, from: { id: from }, text } };
+function update(id: number, chat: number, from: number, text: string, threadId?: number): unknown {
+  return {
+    update_id: id,
+    message: {
+      message_id: id,
+      chat: { id: chat },
+      from: { id: from },
+      text,
+      ...(threadId !== undefined ? { message_thread_id: threadId, is_topic_message: true } : {}),
+    },
+  };
+}
+
+function edited(
+  id: number,
+  chat: number,
+  from: number,
+  text: string,
+  messageId: number,
+  threadId?: number,
+): unknown {
+  return {
+    update_id: id,
+    edited_message: {
+      message_id: messageId,
+      chat: { id: chat },
+      from: { id: from },
+      text,
+      ...(threadId !== undefined ? { message_thread_id: threadId, is_topic_message: true } : {}),
+    },
+  };
+}
+
+function deletedBusiness(id: number, chat: number, messageIds: number[]): unknown {
+  return { update_id: id, deleted_business_messages: { chat: { id: chat }, message_ids: messageIds } };
+}
+
+function topicCreated(id: number, chat: number, from: number, threadId: number, name: string): unknown {
+  return {
+    update_id: id,
+    message: {
+      message_id: id,
+      chat: { id: chat },
+      from: { id: from },
+      message_thread_id: threadId,
+      is_topic_message: true,
+      forum_topic_created: { name },
+    },
+  };
 }
 
 function makeCtx(sessions: SessionSummary[] = [summary("ses_1")], events: unknown[] = []) {
@@ -95,6 +149,7 @@ function makeCtx(sessions: SessionSummary[] = [summary("ses_1")], events: unknow
       interrupt: async (input: any) => {
         calls.interrupt.push(input);
       },
+      wait: async () => {},
       switchModel: async (input: any) => {
         calls.switched.push(input);
       },
@@ -239,6 +294,370 @@ describe("PluginTelegramBot incoming", () => {
       bot.stop();
       expect(peers.get("ses_1")).toBe("67ff3cd8d652017df6f8806657ccb4ea83f1c7edc2967958a35459f9528ff884");
       expect(sent.some((c) => String(c.params["text"]).includes("Paired"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("/nostr <npub> sends the pairing welcome through the bridge", async () => {
+    const dir = tmpDir();
+    try {
+      const peer = "npub1vllnekxk2gqhmahcspn90n95a2plr3ldc2t8jk9r23vlj550lzzqfycvmr";
+      const { fetchImpl, sent } = makeFetch([update(1, 111, 111, `/nostr ${peer}`)]);
+      const { ctx } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set(111, "ses_1");
+      const welcomes: { sessionID: string; peerHex: string }[] = [];
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        nostrWelcome: async (sessionID, peerHex) => {
+          welcomes.push({ sessionID, peerHex });
+          return true;
+        },
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick();
+      abort.abort();
+      bot.stop();
+      expect(welcomes).toEqual([
+        { sessionID: "ses_1", peerHex: "67ff3cd8d652017df6f8806657ccb4ea83f1c7edc2967958a35459f9528ff884" },
+      ]);
+      const texts = sent.map((c) => String(c.params["text"] ?? ""));
+      expect(texts.some((t) => t.includes("Welcome DM sent"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("routes group-topic messages to the bound session and replies in-thread", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([update(1, -100999, 111, "do the thing", 77)]);
+      const { ctx, calls } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("-100999:77", "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        groupID: -100999,
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick();
+      abort.abort();
+      bot.stop();
+      expect(calls.prompt).toHaveLength(1);
+      expect(calls.prompt[0]).toMatchObject({ sessionID: "ses_1", text: "do the thing" });
+      const working = sent.find((c) => String(c.params["text"] ?? "").includes("Working"));
+      expect(working?.params["chat_id"]).toBe(-100999);
+      expect(working?.params["message_thread_id"]).toBe(77);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("editing a submitted prompt stops the run and re-prompts with the new text", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([
+        update(1, 111, 111, "first prompt"),
+        edited(2, 111, 111, "edited prompt", 1),
+      ]);
+      const { ctx, calls } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set(111, "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick();
+      abort.abort();
+      bot.stop();
+      expect(calls.prompt).toHaveLength(2);
+      expect(calls.prompt[0]).toMatchObject({ sessionID: "ses_1", text: "first prompt" });
+      expect(calls.prompt[1]).toMatchObject({ sessionID: "ses_1", text: "edited prompt" });
+      expect(calls.interrupt).toEqual([{ sessionID: "ses_1" }]);
+      const texts = sent.map((c) => String(c.params["text"] ?? ""));
+      expect(texts.some((t) => t.includes("Edited"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores edits of messages the bot never forwarded", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl } = makeFetch([edited(1, 111, 111, "not ours", 99)]);
+      const { ctx, calls } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set(111, "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick();
+      abort.abort();
+      bot.stop();
+      expect(calls.prompt).toHaveLength(0);
+      expect(calls.interrupt).toHaveLength(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops the session when a Telegram Business deletion notice arrives", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([
+        update(1, 111, 111, "delete me"),
+        deletedBusiness(2, 111, [1]),
+      ]);
+      const { ctx, calls } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set(111, "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick();
+      abort.abort();
+      bot.stop();
+      expect(calls.prompt).toHaveLength(1);
+      expect(calls.interrupt).toEqual([{ sessionID: "ses_1" }]);
+      const texts = sent.map((c) => String(c.params["text"] ?? ""));
+      expect(texts.some((t) => t.includes("Deleted"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("PluginTelegramBot group topics", () => {
+  it("linkSession creates a topic, seeds project + model and binds the thread", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([]);
+      const { ctx } = makeCtx([summary("ses_1", "/p/alpha")]);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const chatProjects = new ChatProjectStore(join(dir, "chat-projects.json"));
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects,
+        groupID: -100999,
+      });
+      const result = await bot.linkSession("ses_1");
+      expect(result).toContain("created and linked");
+      expect(mapping.get("-100999:101")).toBe("ses_1");
+      expect(chatProjects.get("-100999:101")).toBe("/p/alpha");
+      const topicCall = sent.find((c) => c.method === "createForumTopic");
+      expect(topicCall?.params).toMatchObject({ chat_id: -100999, name: "title-ses_1" });
+      const linkMsg = sent.find((c) => String(c.params["text"] ?? "").includes("Linked to session"));
+      expect(linkMsg?.params["chat_id"]).toBe(-100999);
+      expect(linkMsg?.params["message_thread_id"]).toBe(101);
+      const text = String(linkMsg?.params["text"] ?? "");
+      expect(text).toContain("Project: alpha (/p/alpha)");
+      expect(text).toContain("Model: anthropic/claude-haiku-5-5 — already selected");
+      expect(text).toContain("GitHub: https://github.com/hdlopesrocha");
+      // Re-running reuses the topic instead of creating another one.
+      const again = await bot.linkSession("ses_1");
+      expect(again).toContain("already linked");
+      expect(sent.filter((c) => c.method === "createForumTopic")).toHaveLength(1);
+      expect(sent.filter((c) => String(c.params["text"] ?? "").includes("Linked to session"))).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("linkSession without a registered group fails with instructions", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl } = makeFetch([]);
+      const { ctx } = makeCtx();
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping: new SessionMapping(join(dir, "mapping.json")),
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      await expect(bot.linkSession("ses_1")).rejects.toThrow(/no group registered/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a user-created topic creates and binds a session", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([topicCreated(1, -100999, 111, 77, "Fix login")]);
+      const { ctx, calls } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const chatProjects = new ChatProjectStore(join(dir, "chat-projects.json"));
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects,
+        groupID: -100999,
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(80);
+      abort.abort();
+      bot.stop();
+      expect(calls.create).toHaveLength(1);
+      expect(calls.create[0]).toMatchObject({ title: "Fix login" });
+      expect(mapping.get("-100999:77")).toBe("ses_new_1");
+      const welcome = sent.find((c) => String(c.params["text"] ?? "").includes("New topic"));
+      expect(welcome?.params["chat_id"]).toBe(-100999);
+      expect(welcome?.params["message_thread_id"]).toBe(77);
+      expect(sent.some((c) => String(c.params["text"] ?? "").includes("Which model"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("topics the bot creates for existing sessions spawn no second session", async () => {
+    const dir = tmpDir();
+    try {
+      const queue: unknown[] = [];
+      const { fetchImpl, sent } = makeFetch(queue);
+      const { ctx, calls } = makeCtx([summary("ses_1", "/p/alpha")]);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        groupID: -100999,
+      });
+      await bot.linkSession("ses_1");
+      // Telegram reports the bot's own new topic as a service message.
+      queue.push(topicCreated(1, -100999, 111, 101, "title-ses_1"));
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(80);
+      abort.abort();
+      bot.stop();
+      expect(calls.create).toHaveLength(0);
+      expect(mapping.get("-100999:101")).toBe("ses_1");
+      expect(sent.filter((c) => String(c.params["text"] ?? "").includes("Linked to session"))).toHaveLength(1);
+      expect(sent.some((c) => String(c.params["text"] ?? "").includes("New topic"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores new topics outside the registered group", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl } = makeFetch([topicCreated(1, -100888, 111, 55, "Elsewhere")]);
+      const { ctx, calls } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        groupID: -100999,
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(80);
+      abort.abort();
+      bot.stop();
+      expect(calls.create).toHaveLength(0);
+      expect(mapping.size()).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("renames the bound topic when the session is renamed", async () => {
+    const dir = tmpDir();
+    try {
+      const events = [
+        { type: "session.updated", data: { sessionID: "ses_1", info: { title: "Renamed once" } } },
+        // Repeated record updates with the same title must not re-edit.
+        { type: "session.updated", data: { sessionID: "ses_1", info: { title: "Renamed once" } } },
+        { type: "session.updated", data: { sessionID: "ses_1", info: { title: "Renamed twice" } } },
+      ];
+      const { fetchImpl, sent } = makeFetch([]);
+      const { ctx } = makeCtx([summary("ses_1", "/p/alpha")], events);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("-100999:101", "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        groupID: -100999,
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(80);
+      abort.abort();
+      bot.stop();
+      const edits = sent.filter((c) => c.method === "editForumTopic");
+      expect(edits).toHaveLength(2);
+      expect(edits[0]?.params).toMatchObject({
+        chat_id: -100999,
+        message_thread_id: 101,
+        name: "Renamed once",
+      });
+      expect(edits[1]?.params).toMatchObject({ name: "Renamed twice" });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -444,6 +863,53 @@ describe("PluginTelegramBot /projects", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("/projects includes OpenCode's own project list", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([update(1, 111, 111, "/projects")]);
+      const { ctx } = makeCtx();
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping: new SessionMapping(join(dir, "mapping.json")),
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        projects: ["/p/alpha"],
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        // The TUI/desktop project list, e.g. opened projects without any
+        // Telegram-linked session.
+        opencodeProjects: async () => ["/p/omega", "/p/alpha"],
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(80);
+      abort.abort();
+      bot.stop();
+      const msg = sent.find((c) => String(c.params["text"] ?? "").includes("OpenCode Projects"));
+      const text = String(msg?.params["text"] ?? "");
+      expect(text).toContain("1. alpha");
+      expect(text).toContain("/p/omega");
+      // Deduped: the configured /p/alpha does not appear twice.
+      expect(text.match(/\/p\/alpha/g)).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("listOpenCodeProjectDirectories returns [] without a registered service", async () => {
+    const dir = tmpDir();
+    const prev = process.env["XDG_STATE_HOME"];
+    process.env["XDG_STATE_HOME"] = dir; // empty: no service.json
+    try {
+      await expect(listOpenCodeProjectDirectories()).resolves.toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env["XDG_STATE_HOME"];
+      else process.env["XDG_STATE_HOME"] = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 describe("setupPluginTelegramBot", () => {
   it("does nothing without a token", async () => {
@@ -452,6 +918,53 @@ describe("setupPluginTelegramBot", () => {
     await handle.invite(111);
     handle.stop();
     cleanup();
+  });
+
+  it("runs in secondary mode when another process holds the poll lock", async () => {
+    const dir = tmpDir();
+    try {
+      const token = "123456:abc";
+      const lockFile = join(dir, "bot.lock");
+      writeFileSync(
+        lockFile,
+        JSON.stringify({
+          pid: 1,
+          host: hostname(),
+          tokenHash: tokenLockHash(token),
+          updatedAt: Date.now(),
+        }),
+      );
+      const urls: string[] = [];
+      const fetchImpl = (async (url: string) => {
+        urls.push(String(url));
+        if (String(url).endsWith("/createForumTopic")) {
+          return { json: async () => ({ ok: true, result: { message_thread_id: 42 } }) } as Response;
+        }
+        return { json: async () => ({ ok: true, result: { message_id: 1 } }) } as Response;
+      }) as unknown as typeof fetch;
+      const { ctx } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const handle = await setupPluginTelegramBot(ctx, {
+        token,
+        lockFile,
+        fetchImpl,
+        mapping,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        groupID: -100999,
+        // Keep the test hermetic: no real OpenCode service discovery.
+        opencodeProjects: async () => [],
+      });
+      await handle.invite(111);
+      const result = await handle.linkSession("ses_1");
+      expect(result).toContain("created and linked");
+      expect(mapping.get("-100999:42")).toBe("ses_1");
+      handle.stop();
+      // No getUpdates (the lock holder polls), but topic creation still works.
+      expect(urls.some((u) => u.endsWith("/getUpdates"))).toBe(false);
+      expect(urls.some((u) => u.endsWith("/createForumTopic"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("invite DMs the project picker to a chat", async () => {
@@ -490,8 +1003,21 @@ function callback(id: number, chat: number, from: number, msgId: number, data: s
   };
 }
 
-function voiceUpdate(id: number, chat: number, from: number, voice: unknown): unknown {
-  return { update_id: id, message: { message_id: id, chat: { id: chat }, from: { id: from }, voice } };
+function voiceUpdate(id: number, chat: number, from: number, voice: unknown, threadId?: number): unknown {
+  return {
+    update_id: id,
+    message: {
+      message_id: id,
+      chat: { id: chat },
+      from: { id: from },
+      voice,
+      ...(threadId !== undefined ? { message_thread_id: threadId, is_topic_message: true } : {}),
+    },
+  };
+}
+
+function documentUpdate(id: number, chat: number, from: number, document: unknown): unknown {
+  return { update_id: id, message: { message_id: id, chat: { id: chat }, from: { id: from }, document } };
 }
 
 function makeVoiceFetch(queue: unknown[], audioBytes: Uint8Array) {
@@ -877,6 +1403,11 @@ describe("PluginTelegramBot voice messages", () => {
       bot.stop();
       expect(calls.prompt).toHaveLength(1);
       expect(calls.prompt[0]).toMatchObject({ sessionID: "ses_1", text: "do the thing" });
+      const files = (calls.prompt[0] as { files?: { uri: string; name: string }[] }).files ?? [];
+      expect(files).toHaveLength(1);
+      expect(files[0]!.uri.startsWith("file://")).toBe(true);
+      expect(files[0]!.name).toBe("telegram-audio-1.ogg");
+      expect(existsSync(fileURLToPath(files[0]!.uri))).toBe(true);
       const texts = sent.map((c) => String(c.params["text"] ?? ""));
       expect(texts.some((t) => t.includes("Transcribing"))).toBe(true);
       // The Transcribing note is adopted as the progress placeholder —
@@ -887,7 +1418,7 @@ describe("PluginTelegramBot voice messages", () => {
     }
   });
 
-  it("warns when nothing audible was transcribed", async () => {
+  it("attaches the audio to the prompt when transcription fails", async () => {
     const dir = tmpDir();
     try {
       const { bot, sent, calls } = voiceBot(
@@ -900,8 +1431,80 @@ describe("PluginTelegramBot voice messages", () => {
       await tick(120);
       abort.abort();
       bot.stop();
-      expect(calls.prompt).toHaveLength(0);
-      expect(sent.some((c) => String(c.params["text"]).includes("Couldn't hear"))).toBe(true);
+      expect(calls.prompt).toHaveLength(1);
+      expect(calls.prompt[0]).toMatchObject({ sessionID: "ses_1" });
+      expect(String((calls.prompt[0] as { text?: string }).text)).toContain("audio file is attached");
+      const files = (calls.prompt[0] as { files?: { uri: string }[] }).files ?? [];
+      expect(files).toHaveLength(1);
+      expect(files[0]!.uri.startsWith("file://")).toBe(true);
+      expect(sent.some((c) => String(c.params["text"]).includes("Couldn't transcribe"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts audio documents (send without compression) as prompts", async () => {
+    const dir = tmpDir();
+    try {
+      const { bot, calls } = voiceBot(
+        dir,
+        [
+          documentUpdate(1, 111, 111, {
+            file_id: "AAAA",
+            file_name: "song.mp3",
+            mime_type: "audio/mpeg",
+          }),
+        ],
+        "song transcript",
+      );
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(120);
+      abort.abort();
+      bot.stop();
+      expect(calls.prompt).toHaveLength(1);
+      expect(calls.prompt[0]).toMatchObject({ sessionID: "ses_1", text: "song transcript" });
+      const files = (calls.prompt[0] as { files?: { uri: string; name: string }[] }).files ?? [];
+      expect(files).toHaveLength(1);
+      expect(files[0]!.name).toBe("song.mp3");
+      expect(files[0]!.uri.endsWith("song.mp3")).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("prompts the topic's session with audio sent in a group topic", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeVoiceFetch(
+        [voiceUpdate(1, -100999, 111, { file_id: "AAAA", duration: 5, mime_type: "audio/ogg" }, 77)],
+        new Uint8Array([9, 9, 9]),
+      );
+      const { ctx, calls } = makeCtx();
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("-100999:77", "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        transcribeVoice: async () => "group audio",
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(120);
+      abort.abort();
+      bot.stop();
+      expect(calls.prompt).toHaveLength(1);
+      expect(calls.prompt[0]).toMatchObject({ sessionID: "ses_1", text: "group audio" });
+      const files = (calls.prompt[0] as { files?: { uri: string }[] }).files ?? [];
+      expect(files).toHaveLength(1);
+      const transcribing = sent.find((c) => String(c.params["text"] ?? "").includes("Transcribing"));
+      expect(transcribing?.params["chat_id"]).toBe(-100999);
+      expect(transcribing?.params["message_thread_id"]).toBe(77);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -940,6 +1543,54 @@ describe("PluginTelegramBot voice messages", () => {
       expect(downloads).toBe(0);
       expect(calls.prompt).toHaveLength(0);
       expect(sent.some((c) => String(c.params["text"]).includes("too long"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("PluginTelegramBot poll contention", () => {
+  it("steps down to secondary on 409 when another process holds the poll lock", async () => {
+    const dir = tmpDir();
+    try {
+      const token = "123456:abc";
+      const lockFile = join(dir, "bot.lock");
+      writeFileSync(
+        lockFile,
+        JSON.stringify({
+          pid: 1,
+          host: hostname(),
+          tokenHash: tokenLockHash(token),
+          updatedAt: Date.now(),
+        }),
+      );
+      let polls = 0;
+      const fetchImpl = (async (url: string) => {
+        if (String(url).endsWith("/getUpdates")) {
+          polls += 1;
+          return {
+            json: async () => ({ ok: false, description: "Conflict: terminated by other getUpdates request" }),
+          } as Response;
+        }
+        return { json: async () => ({ ok: true, result: true }) } as Response;
+      }) as unknown as typeof fetch;
+      const { ctx } = makeCtx();
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi(token, fetchImpl),
+        mapping: new SessionMapping(join(dir, "mapping.json")),
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        lock: new PollLock(lockFile, token),
+      });
+      const abort = new AbortController();
+      // Resolves after stepping down instead of retry-looping the 409 forever.
+      await bot.start(abort.signal);
+      abort.abort();
+      bot.stop();
+      expect(polls).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

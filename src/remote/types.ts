@@ -25,6 +25,7 @@ export interface SessionSummary {
 
 export type SessionEventType =
   | "session.created"
+  | "session.updated"
   | "session.started"
   | "session.message"
   | "session.completed"
@@ -68,6 +69,8 @@ export interface SessionEvent {
   time: number;
   /** Human-readable chunk (assistant text delta, tool label, error, ...). */
   text?: string;
+  /** New session title (session.updated). */
+  title?: string;
   /** True for incremental streaming chunks; false for final snapshots. */
   delta?: boolean;
   tool?: string;

@@ -49,6 +49,13 @@ describe("botState", () => {
       expect(loadBotState(file)).toEqual({ stopped: true, talk: true, nostrStopped: false });
       saveBotState(file, { nostrStopped: true });
       expect(loadBotState(file)).toEqual({ stopped: true, talk: true, nostrStopped: true });
+      saveBotState(file, { groupID: -1001234567890 });
+      expect(loadBotState(file)).toEqual({
+        stopped: true,
+        talk: true,
+        nostrStopped: true,
+        groupID: -1001234567890,
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

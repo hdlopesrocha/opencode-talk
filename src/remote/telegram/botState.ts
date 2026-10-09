@@ -11,6 +11,8 @@ export interface TelegramBotState {
   talk: boolean;
   /** Nostr relay traffic halted via `/nostr off`. */
   nostrStopped: boolean;
+  /** "Opencode Talk" group hosting one forum topic per session (set by /telegram <token> <group-id>). */
+  groupID?: number;
 }
 
 export function defaultBotState(): TelegramBotState {
@@ -25,6 +27,7 @@ export function loadBotState(file: string): TelegramBotState {
       stopped: data.stopped === true,
       talk: data.talk === true,
       nostrStopped: data.nostrStopped === true,
+      ...(typeof data.groupID === "number" && Number.isFinite(data.groupID) ? { groupID: data.groupID } : {}),
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {

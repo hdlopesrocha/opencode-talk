@@ -1,3 +1,7 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { loadConfig } from "../config.js";
 import { createLogger } from "../logger.js";
 import { normalizeNativeEvent } from "../opencode/normalize.js";
@@ -15,8 +19,11 @@ import {
 import { SessionMapping } from "./sessionMapping.js";
 import { ChatProjectStore } from "../chatProjects.js";
 import { formatProjectsList, mergeProjects, MODEL_EFFORTS, parseEffortOnly, parseModelPick, projectName, resolveProject } from "../projects.js";
+import { listOpenCodeProjectDirectories } from "../opencode/projects.js";
 import { transcribeVoiceMessage } from "./voice.js";
 import { claimRunSlot, releaseRunSlot } from "../runSlot.js";
+import { PollLock, defaultPollLockFile, type PollLockHolder } from "./pollLock.js";
+import { GITHUB_PROFILE } from "../branding.js";
 
 const log = createLogger("telegram-plugin-bot");
 
@@ -34,11 +41,15 @@ const HELP_TEXT = [
   "/model <number|provider/model> [effort] — switch model + reasoning effort",
   "/status — show selected session state",
   "/abort — abort the running operation",
-  "/nostr [npub] — show session npub / pair a Nostr peer",
+  "/nostr [npub] — show session npub / pair a peer (DMs a welcome)",
   "/help — this help",
   "",
   "Send any other message to prompt the selected session.",
-  "Voice messages are transcribed and sent as prompts too.",
+  "Voice/audio messages are transcribed and attached to the prompt too.",
+  "Editing a message stops the current run and re-prompts with the new text.",
+  "In the \"Opencode Talk\" group each session has its own topic — write there to prompt it.",
+  "Creating a new topic in the group creates and selects a session for it.",
+  "Renaming a session renames its topic.",
   "Any other /command is sent to the session as-is for OpenCode to run.",
 ].join("\n");
 
@@ -52,6 +63,8 @@ export interface PluginTelegramBotOverrides {
   peers?: PeerStore;
   allowedUsers?: number[];
   projects?: string[];
+  /** Directories of every project OpenCode knows (default: local OpenCode service). */
+  opencodeProjects?: () => Promise<string[]>;
   chatProjectsFile?: string;
   chatProjects?: ChatProjectStore;
   talkEnabled?: () => boolean;
@@ -59,6 +72,12 @@ export interface PluginTelegramBotOverrides {
   transcribeVoice?: (audio: Uint8Array, mime: string) => Promise<string | null>;
   fetchImpl?: typeof fetch;
   pollTimeoutSec?: number;
+  /** "Opencode Talk" group hosting per-session topics (from bot state). */
+  groupID?: number;
+  /** Override the shared single-poller lock file (tests / custom installs). */
+  lockFile?: string;
+  /** DM the Nostr pairing welcome from the session's unique key (true = sent). */
+  nostrWelcome?: (sessionID: string, peerHex: string) => Promise<boolean>;
 }
 
 interface BotMessage {
@@ -68,15 +87,25 @@ interface BotMessage {
   text?: string;
   voice?: { file_id: string; duration?: number; mime_type?: string };
   audio?: { file_id: string; duration?: number; file_name?: string; mime_type?: string };
+  /** Audio sent as a file ("send without compression"). */
+  document?: { file_id: string; file_name?: string; mime_type?: string };
+  /** Forum topic thread (supergroups with topics). */
+  message_thread_id?: number;
+  is_topic_message?: boolean;
+  /** Service message: a new forum topic was created. */
+  forum_topic_created?: { name?: string };
 }
 
 interface BotUpdate {
   update_id: number;
   message?: BotMessage;
+  edited_message?: BotMessage;
+  /** Telegram Business only: regular chats never report deletions. */
+  deleted_business_messages?: { chat: { id: number }; message_ids: number[] };
   callback_query?: {
     id: string;
     from: { id: number };
-    message?: { message_id: number; chat: { id: number } };
+    message?: { message_id: number; chat: { id: number }; message_thread_id?: number };
     data?: string;
   };
 }
@@ -111,7 +140,11 @@ export class TelegramBotApi {
     const res = await this.fetchImpl(`${this.base}/getUpdates`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ offset, timeout: timeoutSec, allowed_updates: ["message", "callback_query"] }),
+      body: JSON.stringify({
+        offset,
+        timeout: timeoutSec,
+        allowed_updates: ["message", "edited_message", "deleted_business_messages", "callback_query"],
+      }),
       signal,
     });
     const data = (await res.json()) as { ok: boolean; result?: BotUpdate[]; description?: string };
@@ -119,21 +152,49 @@ export class TelegramBotApi {
     return data.result ?? [];
   }
 
-  async sendRaw(chatId: number | string, text: string, keyboard?: InlineButton[][]): Promise<number> {
+  async sendRaw(
+    chatId: number | string,
+    text: string,
+    keyboard?: InlineButton[][],
+    threadId?: number,
+  ): Promise<number> {
     const body: Record<string, unknown> = { chat_id: chatId, text: truncate(text) };
     if (keyboard) body["reply_markup"] = { inline_keyboard: keyboard };
+    if (threadId !== undefined) body["message_thread_id"] = threadId;
     const sent = await this.call<{ message_id: number }>("sendMessage", body);
     return sent.message_id;
   }
 
-  async sendMarkdown(chatId: number | string, text: string): Promise<void> {
+  async sendMarkdown(chatId: number | string, text: string, threadId?: number): Promise<void> {
     for (const chunk of splitMessage(text)) {
+      const body: Record<string, unknown> = { chat_id: chatId, text: truncate(chunk), parse_mode: "Markdown" };
+      if (threadId !== undefined) body["message_thread_id"] = threadId;
       try {
-        await this.call("sendMessage", { chat_id: chatId, text: truncate(chunk), parse_mode: "Markdown" });
+        await this.call("sendMessage", body);
       } catch {
-        await this.call("sendMessage", { chat_id: chatId, text: truncate(stripMarkdown(chunk)) });
+        delete body["parse_mode"];
+        await this.call("sendMessage", body);
       }
     }
+  }
+
+  /** Create a forum topic; returns its message_thread_id. */
+  async createForumTopic(chatId: number | string, name: string): Promise<number> {
+    const res = await this.call<{ message_thread_id?: number }>("createForumTopic", {
+      chat_id: chatId,
+      name: name.slice(0, 128),
+    });
+    if (typeof res.message_thread_id !== "number") throw new Error("createForumTopic returned no thread id");
+    return res.message_thread_id;
+  }
+
+  /** Rename a forum topic (needs Manage Topics rights, like createForumTopic). */
+  async editForumTopic(chatId: number | string, threadId: number, name: string): Promise<void> {
+    await this.call("editForumTopic", {
+      chat_id: chatId,
+      message_thread_id: threadId,
+      name: name.slice(0, 128),
+    });
   }
 
   async editMessage(chatId: number | string, messageId: number, text: string): Promise<void> {
@@ -146,6 +207,7 @@ export class TelegramBotApi {
     messageId: number,
     text: string,
     keyboard: InlineButton[][],
+    threadId?: number,
   ): Promise<void> {
     try {
       await this.call("editMessageText", {
@@ -155,7 +217,7 @@ export class TelegramBotApi {
         reply_markup: { inline_keyboard: keyboard },
       });
     } catch {
-      await this.sendRaw(chatId, text, keyboard);
+      await this.sendRaw(chatId, text, keyboard, threadId);
     }
   }
 
@@ -178,11 +240,18 @@ export class TelegramBotApi {
     }
   }
 
-  async sendPhoto(chatId: number | string, bytes: Uint8Array, filename: string, caption?: string): Promise<void> {
+  async sendPhoto(
+    chatId: number | string,
+    bytes: Uint8Array,
+    filename: string,
+    caption?: string,
+    threadId?: number,
+  ): Promise<void> {
     const form = new FormData();
     form.append("chat_id", String(chatId));
     form.append("photo", new Blob([bytes as BlobPart], { type: "application/octet-stream" }), filename);
     if (caption?.trim()) form.append("caption", caption.trim().slice(0, 1024));
+    if (threadId !== undefined) form.append("message_thread_id", String(threadId));
     const res = await this.fetchImpl(`${this.base}/sendPhoto`, { method: "POST", body: form });
     const data = (await res.json()) as { ok: boolean; description?: string };
     if (!data.ok) throw new Error(data.description ?? "sendPhoto failed");
@@ -202,11 +271,12 @@ export class TelegramBotApi {
     if (!res.ok) throw new Error(`file download failed (${res.status})`);
     return new Uint8Array(await res.arrayBuffer());
   }
-  async sendAudio(chatId: number | string, bytes: Uint8Array, title?: string): Promise<void> {
+  async sendAudio(chatId: number | string, bytes: Uint8Array, title?: string, threadId?: number): Promise<void> {
     const form = new FormData();
     form.append("chat_id", String(chatId));
     form.append("audio", new Blob([bytes as BlobPart], { type: "audio/mpeg" }), "voice.mp3");
     if (title?.trim()) form.append("title", title.trim().slice(0, 120));
+    if (threadId !== undefined) form.append("message_thread_id", String(threadId));
     const res = await this.fetchImpl(`${this.base}/sendAudio`, { method: "POST", body: form });
     const data = (await res.json()) as { ok: boolean; description?: string };
     if (!data.ok) throw new Error(data.description ?? "sendAudio failed");
@@ -220,6 +290,41 @@ interface LiveState {
   textBuffer: string;
   lastEdit: number;
   completed: boolean;
+}
+
+/**
+ * Where bot output goes: a private/group chat, or a forum topic in the
+ * "Opencode Talk" group. Topic keys are `${chatId}:${threadId}` and every
+ * send carries `message_thread_id` so it lands in the right topic.
+ */
+interface ChatTarget {
+  chatId: number;
+  threadId?: number;
+  /** Mapping/state key: String(chatId), or `${chatId}:${threadId}` in a topic. */
+  key: string;
+  sendRaw(text: string, keyboard?: InlineButton[][]): Promise<number>;
+  sendMarkdown(text: string): Promise<void>;
+  sendPhoto(bytes: Uint8Array, filename: string, caption?: string): Promise<void>;
+  sendAudio(bytes: Uint8Array, title?: string): Promise<void>;
+}
+
+/** Parse a mapping key back into its chat + optional topic thread. */
+function parseChatKey(key: string): { chatId: number; threadId?: number } {
+  const idx = key.lastIndexOf(":");
+  if (idx > 0) {
+    const chatId = Number(key.slice(0, idx));
+    const threadId = Number(key.slice(idx + 1));
+    if (Number.isFinite(chatId) && Number.isFinite(threadId)) return { chatId, threadId };
+  }
+  return { chatId: Number(key) };
+}
+
+/** A Telegram message submitted to a session, kept so edits can re-run it. */
+interface TrackedPrompt {
+  sessionID: string;
+  /** Chat target key (topic-aware) the prompt came from. */
+  chatKey: string;
+  text: string;
 }
 
 /**
@@ -237,17 +342,33 @@ export class PluginTelegramBot {
   private allowed: Set<number>;
   private pollTimeout: number;
   private configuredProjects: string[];
+  /** OpenCode's own project directories (best-effort; stub in tests). */
+  private listOpencodeProjects: () => Promise<string[]>;
   private chatProjects: ChatProjectStore;
+  /** "Opencode Talk" group id: topics are created here, one per session. */
+  private groupID: number | undefined;
   private talkEnabled: () => boolean;
   private speak: (text: string) => Promise<Uint8Array | null>;
   /** Voice-note transcription (injectable for tests; defaults to local faster-whisper). */
   private transcribeVoice: (audio: Uint8Array, mime: string) => Promise<string | null>;
+  /** Optional Nostr pairing welcome DM (in-process bridge). */
+  private nostrWelcome: ((sessionID: string, peerHex: string) => Promise<boolean>) | undefined;
+  /**
+   * Shared single-poller lock. When set, a sustained Telegram 409 against a
+   * live foreign holder steps this poller down to secondary mode instead of
+   * retry-looping forever (the old poller never yielded when its lock was
+   * stolen, so two processes 409'd each other indefinitely).
+   */
+  private lock?: PollLock;
   private knownSessions = new Set<string>();
   private lastList = new Map<string, SessionSummary[]>();
   private lastModels = new Map<string, ModelRef[]>();
   private lastProjects = new Map<string, string[]>();
   /** One-shot model ask after a session was just selected (chatKey -> sessionID). */
   private pendingModel = new Map<string, string>();
+  /** Submitted prompts by `${chatId}:${messageId}`, so edits re-run them. */
+  private prompts = new Map<string, TrackedPrompt>();
+  private static readonly MAX_TRACKED_PROMPTS = 500;
   private menus = new Map<string, string[]>();
   private live = new Map<string, LiveState>();
   private offset = 0;
@@ -255,6 +376,10 @@ export class PluginTelegramBot {
   /** Sessions already reporting an error/abort for the current run. */
   private failedRuns = new Set<string>();
   private rescanTimer: ReturnType<typeof setInterval> | undefined;
+  /** Serializes topic create/bind (see withTopicLock). */
+  private topicOps: Promise<unknown> = Promise.resolve();
+  /** Last session title mirrored onto each topic key (skip no-op renames). */
+  private topicSessionTitles = new Map<string, string>();
 
   constructor(
     ctx: any,
@@ -266,13 +391,21 @@ export class PluginTelegramBot {
       allowedUsers: Set<number>;
       pollTimeoutSec?: number;
       projects?: string[];
+      /** Project directories from OpenCode's own project list (injectable for tests). */
+      opencodeProjects?: () => Promise<string[]>;
       chatProjects?: ChatProjectStore;
+      /** Forum group for per-session topics (from bot state, set via /telegram). */
+      groupID?: number;
       /** Talk mode switch (reads live state, e.g. `/talk` flag file). */
       talkEnabled?: () => boolean;
       /** Synthesize speech; null = skip (off, empty, or failed). */
       speak?: (text: string) => Promise<Uint8Array | null>;
       /** Transcribe a voice note; null = skip (empty or failed). */
       transcribeVoice?: (audio: Uint8Array, mime: string) => Promise<string | null>;
+      /** DM the Nostr pairing welcome from the session's unique key (true = sent). */
+      nostrWelcome?: (sessionID: string, peerHex: string) => Promise<boolean>;
+      /** Shared single-poller lock (step down to secondary on 409 vs a live holder). */
+      lock?: PollLock;
     },
   ) {
     this.ctx = ctx;
@@ -283,10 +416,14 @@ export class PluginTelegramBot {
     this.allowed = opts.allowedUsers;
     this.pollTimeout = opts.pollTimeoutSec ?? 30;
     this.configuredProjects = [...(opts.projects ?? [])];
+    this.listOpencodeProjects = opts.opencodeProjects ?? (async () => []);
     this.chatProjects = opts.chatProjects ?? new ChatProjectStore("./data/telegram-projects.json");
+    this.groupID = opts.groupID;
     this.talkEnabled = opts.talkEnabled ?? (() => false);
     this.speak = opts.speak ?? (async () => null);
     this.transcribeVoice = opts.transcribeVoice ?? transcribeVoiceMessage;
+    this.nostrWelcome = opts.nostrWelcome;
+    this.lock = opts.lock;
     for (const [, sid] of this.mapping.entries()) this.knownSessions.add(sid);
     for (const sid of this.keys.sessionIDs()) this.knownSessions.add(sid);
   }
@@ -302,32 +439,77 @@ export class PluginTelegramBot {
     }
     signal.addEventListener("abort", () => this.stop(), { once: true });
 
-    void this.consumeEvents(signal).catch((err) => {
-      if (!signal.aborted) log.warn(`Event consumer stopped: ${String(err)}`);
+    // Event fan-out runs under its own controller so a 409 step-down stops
+    // both polling and event routing (otherwise the demoted process would
+    // keep double-sending replies from the shared mapping file).
+    const eventsAbort = new AbortController();
+    const onOuterAbort = (): void => eventsAbort.abort();
+    if (signal.aborted) eventsAbort.abort();
+    else signal.addEventListener("abort", onOuterAbort, { once: true });
+
+    void this.consumeEvents(eventsAbort.signal).catch((err) => {
+      if (!signal.aborted && !eventsAbort.signal.aborted) log.warn(`Event consumer stopped: ${String(err)}`);
     });
 
     log.info("Telegram plugin bot polling");
     let backoff = 1000;
-    while (!signal.aborted) {
+    let conflicts = 0;
+    while (!signal.aborted && !eventsAbort.signal.aborted) {
       try {
         const updates = await this.api.getUpdates(this.offset, this.pollTimeout, signal);
         backoff = 1000;
+        conflicts = 0;
         for (const u of updates) {
           this.offset = Math.max(this.offset, u.update_id + 1);
           await this.handleUpdate(u);
         }
       } catch (err) {
-        if (signal.aborted) break;
+        if (signal.aborted || eventsAbort.signal.aborted) break;
         const msg = String(err);
         if (/unauthorized|not found/i.test(msg)) {
           log.error(`Telegram bot token rejected (${msg}) — fix TELEGRAM_BOT_TOKEN and restart.`);
           break;
         }
-        log.warn(`Poll failed (${msg}); retry in ${backoff}ms`);
+        if (/conflict/i.test(msg)) {
+          conflicts += 1;
+          const other = this.lock?.liveHolder();
+          if (other) {
+            log.warn(
+              `Telegram 409: pid ${other.pid} holds the poll lock — this poller steps down to secondary mode ` +
+                `(topic linking and sends still work here). Stop the other OpenCode server to take over.`,
+            );
+            try {
+              this.lock?.release();
+            } catch {
+              /* best effort */
+            }
+            break;
+          }
+          log.warn(
+            `Telegram 409: another process is polling this bot token (standalone bot or a second ` +
+              `OpenCode server) — stop one. Retrying in ${backoff}ms.`,
+          );
+          if (conflicts === 3) {
+            log.warn(
+              `Telegram 409 persists but this process holds the poll lock — the other poller is outside the ` +
+                `shared lock (a browser getUpdates tab, a standalone bot from another install, or an old server ` +
+                  `without the lock). Close getUpdates tabs, keep one OpenCode server, and set TELEGRAM_LOCK_FILE ` +
+                  `to the same absolute path on every install.`,
+            );
+          }
+        } else {
+          log.warn(`Poll failed (${msg}); retry in ${backoff}ms`);
+        }
         await sleep(backoff);
         backoff = Math.min(backoff * 2, 30_000);
       }
     }
+    try {
+      eventsAbort.abort();
+    } catch {
+      /* ignore */
+    }
+    signal.removeEventListener("abort", onOuterAbort);
     this.stop();
   }
 
@@ -343,53 +525,225 @@ export class PluginTelegramBot {
     return (fromId !== undefined && this.allowed.has(fromId)) || (chatId !== undefined && this.allowed.has(chatId));
   }
 
+  /** Build a send target from a mapping key (private chat or topic). */
+  private targetOfKey(key: string): ChatTarget {
+    const { chatId, threadId } = parseChatKey(key);
+    return this.targetOf(chatId, threadId);
+  }
+
+  /** Build a send target: private/group chat, or a forum topic when threadId is set. */
+  private targetOf(chatId: number, threadId?: number): ChatTarget {
+    const api = this.api;
+    return {
+      chatId,
+      threadId,
+      key: threadId !== undefined ? `${chatId}:${threadId}` : String(chatId),
+      sendRaw: (text, keyboard) => api.sendRaw(chatId, text, keyboard, threadId),
+      sendMarkdown: (text) => api.sendMarkdown(chatId, text, threadId),
+      sendPhoto: (bytes, filename, caption) => api.sendPhoto(chatId, bytes, filename, caption, threadId),
+      sendAudio: (bytes, title) => api.sendAudio(chatId, bytes, title, threadId),
+    };
+  }
+
   private async handleUpdate(u: BotUpdate): Promise<void> {
     if (u.callback_query) {
       await this.handleMenuCallback(u.callback_query);
       return;
     }
+    if (u.edited_message) {
+      await this.handleEditedMessage(u.edited_message);
+      return;
+    }
+    if (u.deleted_business_messages) {
+      await this.handleDeletedMessages(u.deleted_business_messages);
+      return;
+    }
     const msg = u.message;
     const text = msg?.text?.trim();
     if (!msg) return;
-    const chatId = msg.chat.id;
+    const target = this.targetOf(msg.chat.id, msg.message_thread_id);
     const fromId = msg.from?.id;
-    if (!this.isAuthorized(fromId, chatId)) {
-      log.warn(`Denied Telegram access from user=${fromId} chat=${chatId}`);
+    if (!this.isAuthorized(fromId, msg.chat.id)) {
+      log.warn(`Denied Telegram access from user=${fromId} chat=${msg.chat.id}`);
       try {
-        await this.api.sendRaw(chatId, "⛔ Not authorized to use this bot.");
+        await target.sendRaw("⛔ Not authorized to use this bot.");
       } catch {
         /* ignore */
       }
       return;
     }
-    const voice = msg.voice ?? msg.audio;
+    // A topic created in the registered group becomes a new session (the
+    // service message has no text; handle it before the text paths).
+    if (msg.forum_topic_created) {
+      await this.handleTopicCreated(msg);
+      return;
+    }
+    const voice = this.audioOf(msg);
     if (voice) {
-      await this.handleVoiceMessage(chatId, voice.file_id, voice.duration, voice.mime_type);
+      await this.handleVoiceMessage(
+        target,
+        voice.file_id,
+        voice.duration,
+        voice.mime_type,
+        msg.message_id,
+        voice.file_name,
+      );
       return;
     }
     if (!text) return;
     if (text.startsWith("/")) {
-      await this.handleCommand(chatId, text);
+      await this.handleCommand(target, text, msg.message_id);
       return;
     }
     // One-shot model ask after a session was just selected: a bare model
     // pick (or effort) switches, anything else prompts the agent as usual.
-    const pendingSession = this.pendingModel.get(String(chatId));
+    const pendingSession = this.pendingModel.get(target.key);
     if (pendingSession) {
-      this.pendingModel.delete(String(chatId));
-      if (await this.tryModelReply(chatId, pendingSession, text)) return;
+      this.pendingModel.delete(target.key);
+      if (await this.tryModelReply(target, pendingSession, text)) return;
     }
-    const selected = this.mapping.get(chatId);
+    const selected = this.mapping.get(target.key);
     if (!selected) {
-      await this.api.sendRaw(chatId, "No session selected. Use /sessions then /use <number>, or /new.");
+      await target.sendRaw("No session selected. Use /sessions then /use <number>, or /new.");
       return;
     }
     try {
       await this.prompt(selected, text);
-      this.ensureLive(String(chatId), selected);
-      await this.ensurePlaceholder(chatId, String(chatId), progressLine("Working..."));
+      this.trackPrompt(msg.chat.id, msg.message_id, { sessionID: selected, chatKey: target.key, text });
+      this.ensureLive(target.key, selected);
+      await this.ensurePlaceholder(target.key, progressLine("Working..."));
     } catch (err) {
-      await this.api.sendRaw(chatId, `⚠️ Could not send message: ${errMessage(err)}`);
+      await target.sendRaw(`⚠️ Could not send message: ${errMessage(err)}`);
+    }
+  }
+
+  /**
+   * Serializes topic creation/binding. Telegram sends a `forum_topic_created`
+   * service message for topics the bot itself creates for existing sessions
+   * (linkSession), and that update can race the link that created it. Holding
+   * this lock across create→bind makes the service message always find the
+   * thread already mapped, so it never spawns a duplicate session.
+   */
+  private withTopicLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.topicOps.then(fn, fn);
+    this.topicOps = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * A new forum topic was created in the registered group — create an OpenCode
+   * session for it (titled after the topic), bind the thread, and seed the
+   * project scope. Topics the bot created itself are already mapped and are
+   * ignored here.
+   */
+  private async handleTopicCreated(msg: BotMessage): Promise<void> {
+    const threadID = msg.message_thread_id;
+    if (threadID === undefined) return;
+    const chatID = msg.chat.id;
+    if (this.groupID === undefined || chatID !== this.groupID) return;
+    const key = `${chatID}:${threadID}`;
+    const target = this.targetOf(chatID, threadID);
+    const name = msg.forum_topic_created?.name?.trim() ?? "";
+    await this.withTopicLock(async () => {
+      if (this.mapping.get(key)) return;
+      // Another server polling the same token may have just linked this topic.
+      reloadMapping(this.mapping);
+      if (this.mapping.get(key)) return;
+      try {
+        const created = await this.createSession(name || undefined);
+        this.mapping.set(key, created.id);
+        this.topicSessionTitles.set(key, created.title);
+        this.lastList.delete(key);
+        if (created.directory) this.chatProjects.set(key, created.directory);
+        await target.sendMarkdown(
+          `✅ New topic → session created and selected:\n${formatStatus(created)}\n\n` +
+            `Write here to prompt it. /models /model /status /abort /nostr work here too.`,
+        );
+        await this.askModel(target, created.id);
+      } catch (err) {
+        await target.sendRaw(`⚠️ Could not create a session for this topic: ${errMessage(err)}`);
+      }
+    });
+  }
+
+  /** Remember a submitted prompt so an edit can stop + re-run it later. */
+  private trackPrompt(chatId: number, messageId: number, entry: TrackedPrompt): void {
+    const key = `${chatId}:${messageId}`;
+    this.prompts.delete(key); // refresh insertion order
+    this.prompts.set(key, entry);
+    while (this.prompts.size > PluginTelegramBot.MAX_TRACKED_PROMPTS) {
+      const oldest = this.prompts.keys().next().value;
+      if (oldest === undefined) break;
+      this.prompts.delete(oldest);
+    }
+  }
+
+  /**
+   * A user edited a message: stop the session's current run and submit the
+   * edited text as a fresh prompt. Only messages we forwarded to a session
+   * are tracked; anything else is ignored.
+   */
+  private async handleEditedMessage(msg: BotMessage): Promise<void> {
+    const text = msg.text?.trim();
+    if (!text) return;
+    if (!this.isAuthorized(msg.from?.id, msg.chat.id)) return;
+    const key = `${msg.chat.id}:${msg.message_id}`;
+    const entry = this.prompts.get(key);
+    if (!entry) return;
+    const target = this.targetOf(msg.chat.id, msg.message_thread_id);
+    // Stop the current run (idle sessions are a no-op) before re-prompting.
+    try {
+      await this.ctx.session.interrupt({ sessionID: entry.sessionID });
+      await Promise.race([
+        this.ctx.session.wait({ sessionID: entry.sessionID }).catch(() => {}),
+        sleep(15_000),
+      ]);
+    } catch {
+      /* best effort — re-prompt regardless */
+    }
+    try {
+      await this.prompt(entry.sessionID, text);
+    } catch (err) {
+      await target.sendRaw(`⚠️ Could not re-send the edited message: ${errMessage(err)}`);
+      return;
+    }
+    this.trackPrompt(msg.chat.id, msg.message_id, { ...entry, text });
+    const st = this.ensureLive(target.key, entry.sessionID);
+    // The ack doubles as the progress placeholder when no run is showing yet;
+    // later tool updates edit it. An existing placeholder keeps updating.
+    const ackId = await target.sendRaw("✏️ Edited — stopped the current run and re-prompted.");
+    if (!st.placeholderId) {
+      st.placeholderId = ackId;
+      st.lastEdit = Date.now();
+    }
+  }
+
+  /**
+   * Telegram Business deletion notice: stop the session that ran the deleted
+   * prompt and forget it. Regular chats never report deletions (Bot API
+   * limitation); the plugin API also has no message removal, so stopping the
+   * run is the closest OpenCode-side equivalent.
+   */
+  private async handleDeletedMessages(
+    update: NonNullable<BotUpdate["deleted_business_messages"]>,
+  ): Promise<void> {
+    for (const messageId of update.message_ids) {
+      const key = `${update.chat.id}:${messageId}`;
+      const entry = this.prompts.get(key);
+      if (!entry) continue;
+      this.prompts.delete(key);
+      try {
+        await this.ctx.session.interrupt({ sessionID: entry.sessionID });
+      } catch {
+        /* idle or gone */
+      }
+      const target = this.targetOfKey(entry.chatKey);
+      await target
+        .sendRaw(`🗑 Deleted — stopped session ${entry.sessionID}.`)
+        .catch(() => undefined);
     }
   }
 
@@ -400,148 +754,185 @@ export class PluginTelegramBot {
    * Voice/audio message → download → transcribe → prompt the selected
    * session, reusing the normal progress flow afterwards.
    */
+  /** Voice notes, audio files, and audio documents ("send without compression"). */
+  private audioOf(
+    msg: BotMessage,
+  ): { file_id: string; duration?: number; mime_type?: string; file_name?: string } | undefined {
+    if (msg.voice) return msg.voice;
+    if (msg.audio) return msg.audio;
+    if (msg.document && (msg.document.mime_type ?? "").toLowerCase().startsWith("audio/")) {
+      return msg.document;
+    }
+    return undefined;
+  }
+
+  /**
+   * Voice/audio message → download → save a local copy → transcribe → prompt
+   * the selected session with the transcript (when available) and the audio
+   * attached, so OpenCode gets the audio itself even if transcription fails.
+   */
   private async handleVoiceMessage(
-    chatId: number,
+    target: ChatTarget,
     fileId: string,
     durationSec: number | undefined,
     mimeType: string | undefined,
+    messageId?: number,
+    fileName?: string,
   ): Promise<void> {
-    const selected = this.mapping.get(chatId);
+    const selected = this.mapping.get(target.key);
     if (!selected) {
-      await this.api.sendRaw(chatId, "No session selected. Use /sessions then /use <number>, or /new.");
+      await target.sendRaw("No session selected. Use /sessions then /use <number>, or /new.");
       return;
     }
     if (durationSec !== undefined && durationSec > PluginTelegramBot.MAX_VOICE_SECONDS) {
-      await this.api.sendRaw(
-        chatId,
+      await target.sendRaw(
         `⚠️ Voice message too long (${durationSec}s, max ${PluginTelegramBot.MAX_VOICE_SECONDS}s).`,
       );
       return;
     }
-    const workingId = await this.api.sendRaw(chatId, "🎙 Transcribing voice message…").catch(() => 0);
+    const workingId = await target.sendRaw("🎙 Transcribing voice message…").catch(() => 0);
     let bytes: Uint8Array;
     try {
       const { path } = await this.api.getFilePath(fileId);
       bytes = await this.api.downloadFile(path);
     } catch (err) {
-      await this.api.sendRaw(chatId, `⚠️ Could not download that voice message: ${errMessage(err)}`);
+      await target.sendRaw(`⚠️ Could not download that voice message: ${errMessage(err)}`);
       return;
     }
-    const transcript = await this.transcribeVoice(bytes, mimeType ?? "audio/ogg");
-    if (!transcript) {
-      await this.api.sendRaw(chatId, "⚠️ Couldn't hear any speech in that voice message.");
-      return;
-    }
+    const mime = mimeType ?? "audio/ogg";
+    const attachment = saveAudioAttachment(bytes, mime, messageId, fileName);
+    let transcript: string | null = null;
     try {
-      await this.prompt(selected, transcript);
-      const st = this.ensureLive(String(chatId), selected);
+      transcript = await this.transcribeVoice(bytes, mime);
+    } catch (err) {
+      log.warn("Transcription failed", { error: String(err) });
+    }
+    if (!transcript && !attachment) {
+      await target.sendRaw("⚠️ Couldn't hear any speech in that voice message.");
+      return;
+    }
+    if (!transcript) {
+      await target.sendRaw("🎙 Couldn't transcribe — attached the audio to the prompt.").catch(() => undefined);
+    }
+    const text =
+      transcript ??
+      "(Telegram voice/audio message without a transcript — the audio file is attached.)";
+    try {
+      await this.prompt(
+        selected,
+        text,
+        attachment ? [{ ...attachment, description: "Telegram voice/audio message" }] : undefined,
+      );
+      if (messageId !== undefined) {
+        this.trackPrompt(target.chatId, messageId, { sessionID: selected, chatKey: target.key, text });
+      }
+      const st = this.ensureLive(target.key, selected);
       if (!st.placeholderId && workingId) {
         st.placeholderId = workingId;
         st.lastEdit = Date.now();
       }
-      await this.ensurePlaceholder(chatId, String(chatId), progressLine("Working..."));
+      await this.ensurePlaceholder(target.key, progressLine("Working..."));
     } catch (err) {
-      await this.api.sendRaw(chatId, `⚠️ Could not send message: ${errMessage(err)}`);
+      await target.sendRaw(`⚠️ Could not send message: ${errMessage(err)}`);
     }
   }
 
-  private async handleCommand(chatId: number, text: string): Promise<void> {
+  private async handleCommand(target: ChatTarget, text: string, messageId?: number): Promise<void> {
     const space = text.indexOf(" ");
     const rawCmd = (space < 0 ? text : text.slice(0, space)).slice(1).toLowerCase();
     const cmd = rawCmd.split("@")[0] ?? "";
     const arg = (space < 0 ? "" : text.slice(space + 1)).trim();
     switch (cmd) {
       case "start":
-        await this.api.sendRaw(chatId, `👋 OpenCode remote ready.\n\n${HELP_TEXT}`);
+        await target.sendRaw(`👋 OpenCode remote ready.\n\n${HELP_TEXT}\n\nGitHub: ${GITHUB_PROFILE}`);
         break;
       case "help":
-        await this.api.sendRaw(chatId, HELP_TEXT);
+        await target.sendRaw(HELP_TEXT);
         break;
       case "menu":
-        await this.inviteToProjects(chatId);
+        await this.inviteToProjects(target.chatId, target.threadId);
         break;
       case "projects": {
         const projects = await this.listProjects();
-        this.lastProjects.set(String(chatId), projects);
-        await this.api.sendRaw(chatId, formatProjectsList(projects));
+        this.lastProjects.set(target.key, projects);
+        await target.sendRaw(formatProjectsList(projects));
         break;
       }
       case "project": {
-        await this.handleProjectCommand(chatId, arg);
+        await this.handleProjectCommand(target, arg);
         break;
       }
       case "sessions": {
-        const scope = this.chatProjects.get(chatId);
+        const scope = this.chatProjects.get(target.key);
         const sessions = await this.listKnownSessions(scope);
-        this.lastList.set(String(chatId), sessions);
+        this.lastList.set(target.key, sessions);
         const suffix = scope ? `\n(Project ${projectName(scope)} — /project clear for all)` : "";
-        await this.api.sendMarkdown(chatId, formatSessionsList(sessions) + suffix);
+        await target.sendMarkdown(formatSessionsList(sessions) + suffix);
         break;
       }
       case "new": {
-        const dir = this.chatProjects.get(chatId);
+        const dir = this.chatProjects.get(target.key);
         const created = await this.createSession(arg || undefined, dir);
-        this.mapping.set(chatId, created.id);
-        this.lastList.delete(String(chatId));
+        this.mapping.set(target.key, created.id);
+        this.lastList.delete(target.key);
         const where = dir ? `\nDir: \`${dir}\`` : "";
-        await this.api.sendMarkdown(chatId, `✅ Created and selected:\n${formatStatus(created)}${where}`);
-        await this.askModel(chatId, created.id);
+        await target.sendMarkdown(`✅ Created and selected:\n${formatStatus(created)}${where}`);
+        await this.askModel(target, created.id);
         break;
       }
       case "use": {
         if (!arg) {
-          await this.api.sendRaw(chatId, "Usage: /use <number|session-id>\nSee /sessions for the list.");
+          await target.sendRaw("Usage: /use <number|session-id>\nSee /sessions for the list.");
           break;
         }
         const sessions = await this.listKnownSessions();
-        this.lastList.set(String(chatId), sessions);
-        const target = resolveSession(arg, sessions, this.lastList.get(String(chatId)));
-        if (!target) {
-          await this.api.sendRaw(chatId, `⚠️ No session matches "${arg}". See /sessions.`);
+        this.lastList.set(target.key, sessions);
+        const picked = resolveSession(arg, sessions, this.lastList.get(target.key));
+        if (!picked) {
+          await target.sendRaw(`⚠️ No session matches "${arg}". See /sessions.`);
           break;
         }
-        this.mapping.set(chatId, target.id);
-        await this.api.sendMarkdown(chatId, `✅ Selected:\n${formatStatus(target)}`);
-        await this.askModel(chatId, target.id);
+        this.mapping.set(target.key, picked.id);
+        await target.sendMarkdown(`✅ Selected:\n${formatStatus(picked)}`);
+        await this.askModel(target, picked.id);
         break;
       }
       case "status": {
-        const selected = this.mapping.get(chatId);
+        const selected = this.mapping.get(target.key);
         if (!selected) {
-          await this.api.sendRaw(chatId, "No session selected. Use /sessions then /use <number>.");
+          await target.sendRaw("No session selected. Use /sessions then /use <number>.");
           break;
         }
         try {
-          await this.api.sendMarkdown(chatId, formatStatus(await this.getSession(selected)));
+          await target.sendMarkdown(formatStatus(await this.getSession(selected)));
         } catch {
-          await this.api.sendRaw(chatId, "⚠️ Session unavailable.");
+          await target.sendRaw("⚠️ Session unavailable.");
         }
         break;
       }
       case "models": {
         try {
           const models = await this.listModels();
-          this.lastModels.set(String(chatId), models);
-          const selected = this.mapping.get(chatId);
+          this.lastModels.set(target.key, models);
+          const selected = this.mapping.get(target.key);
           const current = selected ? (await this.getSession(selected).catch(() => undefined))?.model : undefined;
-          await this.api.sendRaw(chatId, formatModelsList(models, current));
+          await target.sendRaw(formatModelsList(models, current));
         } catch (err) {
-          await this.api.sendRaw(chatId, `⚠️ Could not list models: ${errMessage(err)}`);
+          await target.sendRaw(`⚠️ Could not list models: ${errMessage(err)}`);
         }
         break;
       }
       case "model": {
-        const selected = this.mapping.get(chatId);
+        const selected = this.mapping.get(target.key);
         if (!selected) {
-          await this.api.sendRaw(chatId, "No session selected. Use /sessions then /use <number>.");
+          await target.sendRaw("No session selected. Use /sessions then /use <number>.");
           break;
         }
         const [pick, effort] = arg.split(/\s+/);
         if (!pick) {
           try {
             const current = (await this.getSession(selected)).model;
-            await this.api.sendRaw(
-              chatId,
+            await target.sendRaw(
               current
                 ? `Session model: ${current.providerID}/${current.id}` +
                     (current.variant ? ` (reasoning: ${current.variant})` : "") +
@@ -549,71 +940,68 @@ export class PluginTelegramBot {
                 : "Session model unknown. See /models, then /model <number|provider/model> [effort].",
             );
           } catch {
-            await this.api.sendRaw(chatId, "⚠️ Session unavailable.");
+            await target.sendRaw("⚠️ Session unavailable.");
           }
           break;
         }
         try {
           const models = await this.listModels();
-          this.lastModels.set(String(chatId), models);
-          const target = resolveModel(pick, models, this.lastModels.get(String(chatId)));
-          if (!target) {
-            await this.api.sendRaw(chatId, `⚠️ No model matches "${pick}". See /models.`);
+          this.lastModels.set(target.key, models);
+          const picked = resolveModel(pick, models, this.lastModels.get(target.key));
+          if (!picked) {
+            await target.sendRaw(`⚠️ No model matches "${pick}". See /models.`);
             break;
           }
           const variant = effort?.toLowerCase();
-          if (variant && !(target.variants ?? []).map((v) => v.toLowerCase()).includes(variant)) {
-            await this.api.sendRaw(
-              chatId,
-              `⚠️ ${target.providerID}/${target.id} has no "${effort}" reasoning effort.` +
-                (target.variants?.length ? ` Available: ${target.variants.join(", ")}.` : ""),
+          if (variant && !(picked.variants ?? []).map((v) => v.toLowerCase()).includes(variant)) {
+            await target.sendRaw(
+              `⚠️ ${picked.providerID}/${picked.id} has no "${effort}" reasoning effort.` +
+                (picked.variants?.length ? ` Available: ${picked.variants.join(", ")}.` : ""),
             );
             break;
           }
           await this.ctx.session.switchModel({
             sessionID: selected,
             model: {
-              providerID: target.providerID,
-              id: target.id,
+              providerID: picked.providerID,
+              id: picked.id,
               ...(variant ? { variant } : {}),
             },
           });
-          await this.api.sendRaw(
-            chatId,
-            `✅ Session now uses ${target.providerID}/${target.id}` +
+          await target.sendRaw(
+            `✅ Session now uses ${picked.providerID}/${picked.id}` +
               (variant ? ` (reasoning: ${variant})` : "") +
               `.\nSend your prompt again.`,
           );
         } catch (err) {
-          await this.api.sendRaw(chatId, `⚠️ Could not switch model: ${errMessage(err)}`);
+          await target.sendRaw(`⚠️ Could not switch model: ${errMessage(err)}`);
         }
         break;
       }
       case "abort": {
-        const selected = this.mapping.get(chatId);
+        const selected = this.mapping.get(target.key);
         if (!selected) {
-          await this.api.sendRaw(chatId, "No session selected.");
+          await target.sendRaw("No session selected.");
           break;
         }
         try {
           await this.ctx.session.interrupt({ sessionID: selected });
-          await this.api.sendRaw(chatId, "🛑 Abort requested.");
+          await target.sendRaw("🛑 Abort requested.");
         } catch (err) {
-          await this.api.sendRaw(chatId, `⚠️ Abort failed: ${errMessage(err)}`);
+          await target.sendRaw(`⚠️ Abort failed: ${errMessage(err)}`);
         }
         break;
       }
       case "nostr": {
-        const selected = this.mapping.get(chatId);
+        const selected = this.mapping.get(target.key);
         if (!selected) {
-          await this.api.sendRaw(chatId, "No session selected. Use /sessions then /use <number>.");
+          await target.sendRaw("No session selected. Use /sessions then /use <number>.");
           break;
         }
         const identity = this.keys.getOrCreate(selected);
         if (!arg) {
           const peerHex = this.peers.get(selected);
-          await this.api.sendRaw(
-            chatId,
+          await target.sendRaw(
             `Session Nostr identity:\n${identity.npub}\n\n` +
               `Paired peer: ${peerHex ? hexToNpub(peerHex) : "(none)"}\n\n` +
               `DM that npub from your Nostr key to control this session, ` +
@@ -623,44 +1011,77 @@ export class PluginTelegramBot {
         }
         const hex = normalizePeer(arg.split(/\s+/)[0] ?? "");
         if (!hex) {
-          await this.api.sendRaw(chatId, `⚠️ Invalid key "${arg}". Pass an npub1… or 64-hex pubkey.`);
+          await target.sendRaw(`⚠️ Invalid key "${arg}". Pass an npub1… or 64-hex pubkey.`);
           break;
         }
         this.peers.set(selected, hex);
-        await this.api.sendRaw(chatId, `✅ Paired ${hexToNpub(hex)} with session "${selected}".\nIt can now DM ${identity.npub}.`);
+        let welcomed = false;
+        if (this.nostrWelcome) {
+          try {
+            welcomed = await this.nostrWelcome(selected, hex);
+          } catch (err) {
+            log.warn("Nostr welcome DM failed", { error: String(err) });
+          }
+        }
+        await target.sendRaw(
+          `✅ Paired ${hexToNpub(hex)} with session "${selected}".\n` +
+            (welcomed
+              ? `Welcome DM sent from ${identity.npub} — model and reasoning already selected; ` +
+                `reply with a pick to change them.`
+              : `It can now DM ${identity.npub}.`),
+        );
         break;
       }
       default: {
         // Not a bot command — forward it as-is to the selected session and
         // let OpenCode resolve it (custom commands, skills). The agent's
         // reply streams back here through the event bridge.
-        const selected = this.mapping.get(chatId);
+        const selected = this.mapping.get(target.key);
         if (!selected) {
-          await this.api.sendRaw(chatId, "No session selected. Use /menu, /sessions then /use <number>, or /new.");
+          await target.sendRaw("No session selected. Use /menu, /sessions then /use <number>, or /new.");
           break;
         }
         try {
           await this.prompt(selected, text);
-          this.ensureLive(String(chatId), selected);
-          await this.ensurePlaceholder(chatId, String(chatId), progressLine("Working..."));
+          if (messageId !== undefined) {
+            this.trackPrompt(target.chatId, messageId, { sessionID: selected, chatKey: target.key, text });
+          }
+          this.ensureLive(target.key, selected);
+          await this.ensurePlaceholder(target.key, progressLine("Working..."));
         } catch (err) {
-          await this.api.sendRaw(chatId, `⚠️ Could not send message: ${errMessage(err)}`);
+          await target.sendRaw(`⚠️ Could not send message: ${errMessage(err)}`);
         }
         break;
       }
     }
   }
 
-  private async prompt(sessionID: string, text: string): Promise<void> {
+  private async prompt(
+    sessionID: string,
+    text: string,
+    files?: { uri: string; name?: string; description?: string }[],
+  ): Promise<void> {
     this.knownSessions.add(sessionID);
-    await this.ctx.session.prompt({ sessionID, text, metadata: { source: "telegram-bridge" } });
+    await this.ctx.session.prompt({
+      sessionID,
+      text,
+      ...(files && files.length > 0 ? { files } : {}),
+      metadata: { source: "telegram-bridge" },
+    });
   }
 
   // --- /menu: project → session picker -----------------------------------
 
-  /** Configured projects first, then working directories discovered from known sessions. */
+  /** Configured projects first, then OpenCode's project list, then working directories discovered from known sessions. */
   private async listProjects(): Promise<string[]> {
     const discovered: (string | undefined)[] = [];
+    // OpenCode's own project list (TUI/desktop picker), so projects that
+    // have no Telegram-linked session still show up. Best-effort.
+    try {
+      discovered.push(...(await this.listOpencodeProjects()));
+    } catch (err) {
+      log.warn("Could not list OpenCode projects", { error: String(err) });
+    }
     for (const id of this.knownSessions) {
       try {
         discovered.push((await this.getSession(id)).directory);
@@ -672,34 +1093,39 @@ export class PluginTelegramBot {
   }
 
   /** DM a chat the project picker (used by /menu and the post-connect invite). */
-  async inviteToProjects(chatId: number): Promise<void> {
-    const projects = await this.listProjects();    if (projects.length === 0) {
-      await this.api.sendRaw(
-        chatId,
+  async inviteToProjects(chatId: number, threadId?: number): Promise<void> {
+    const target = this.targetOf(chatId, threadId);
+    const projects = await this.listProjects();
+    if (projects.length === 0) {
+      await target.sendRaw(
         "No projects yet.\nSet TELEGRAM_PROJECTS (comma-separated directories) and restart, " +
           "or create a session with /new — its directory joins the list automatically.",
       );
       return;
     }
-    this.menus.set(String(chatId), projects);
-    await this.api.sendRaw(chatId, "Select a project:", projectKeyboard(projects));
+    this.menus.set(target.key, projects);
+    await target.sendRaw("Select a project:", projectKeyboard(projects));
   }
 
-  private async showSessionMenu(chatId: number, messageId: number | undefined, projectIndex: number): Promise<void> {
-    const projects = this.menus.get(String(chatId)) ?? (await this.listProjects());
+  private async showSessionMenu(
+    target: ChatTarget,
+    messageId: number | undefined,
+    projectIndex: number,
+  ): Promise<void> {
+    const projects = this.menus.get(target.key) ?? (await this.listProjects());
     const project = projects[projectIndex];
     if (!project) {
       await this.api.answerCallback("", "Project expired — run /menu again.");
       return;
     }
-    this.menus.set(String(chatId), projects);
+    this.menus.set(target.key, projects);
     const sessions = (await this.listKnownSessions()).filter((s) => s.directory === project);
     const name = projectName(project);
-    await this.sendSessionMenu(chatId, messageId, projectIndex, name, project, sessions);
+    await this.sendSessionMenu(target, messageId, projectIndex, name, project, sessions);
   }
 
   private async sendSessionMenu(
-    chatId: number,
+    target: ChatTarget,
     messageId: number | undefined,
     projectIndex: number,
     name: string,
@@ -714,8 +1140,8 @@ export class PluginTelegramBot {
     const text =
       `Project ${name}\n${project}\n` +
       (sessions.length > 0 ? "Select a session:" : "No sessions here yet — create one:");
-    if (messageId === undefined) await this.api.sendRaw(chatId, text, keyboard);
-    else await this.api.editMenu(chatId, messageId, text, keyboard);
+    if (messageId === undefined) await target.sendRaw(text, keyboard);
+    else await this.api.editMenu(target.chatId, messageId, text, keyboard, target.threadId);
   }
 
   private async handleMenuCallback(
@@ -731,50 +1157,51 @@ export class PluginTelegramBot {
       await this.api.answerCallback(cb.id, "⛔ Not authorized.");
       return;
     }
+    const target = this.targetOf(chatId, cb.message?.message_thread_id);
     const data = cb.data ?? "";
     const parts = data.split(":");
     if (parts[0] !== "menu") return;
     const kind = parts[1];
     if (kind === "back") {
       await this.api.answerCallback(cb.id);
-      const projects = this.menus.get(String(chatId)) ?? (await this.listProjects());
-      this.menus.set(String(chatId), projects);
+      const projects = this.menus.get(target.key) ?? (await this.listProjects());
+      this.menus.set(target.key, projects);
       if (messageId === undefined) {
-        await this.api.sendRaw(chatId, "Select a project:", projectKeyboard(projects));
+        await target.sendRaw("Select a project:", projectKeyboard(projects));
       } else {
-        await this.api.editMenu(chatId, messageId, "Select a project:", projectKeyboard(projects));
+        await this.api.editMenu(chatId, messageId, "Select a project:", projectKeyboard(projects), target.threadId);
       }
       return;
     }
     if (kind === "proj") {
       await this.api.answerCallback(cb.id);
-      await this.showSessionMenu(chatId, messageId, Number.parseInt(parts[2] ?? "", 10));
+      await this.showSessionMenu(target, messageId, Number.parseInt(parts[2] ?? "", 10));
       return;
     }
     if (kind === "ses") {
       const sessionID = parts.slice(2).join(":");
       try {
         const s = await this.getSession(sessionID);
-        this.mapping.set(chatId, sessionID);
+        this.mapping.set(target.key, sessionID);
         this.knownSessions.add(sessionID);
         await this.api.answerCallback(cb.id, "Selected.");
         const text = `✅ Selected:\n${formatStatus(s)}\n\nSend a message to prompt it.`;
-        if (messageId === undefined) await this.api.sendMarkdown(chatId, text);
+        if (messageId === undefined) await target.sendMarkdown(text);
         else {
           try {
             await this.api.editMessage(chatId, messageId, text);
           } catch {
-            await this.api.sendMarkdown(chatId, text);
+            await target.sendMarkdown(text);
           }
         }
-        await this.askModel(chatId, sessionID);
+        await this.askModel(target, sessionID);
       } catch {
         await this.api.answerCallback(cb.id, "Session unavailable — run /menu again.");
       }
       return;
     }
     if (kind === "new") {
-      const projects = this.menus.get(String(chatId)) ?? (await this.listProjects());
+      const projects = this.menus.get(target.key) ?? (await this.listProjects());
       const project = projects[Number.parseInt(parts[2] ?? "", 10)];
       if (!project) {
         await this.api.answerCallback(cb.id, "Project expired — run /menu again.");
@@ -782,18 +1209,18 @@ export class PluginTelegramBot {
       }
       try {
         const created = await this.createSession(undefined, project);
-        this.mapping.set(chatId, created.id);
+        this.mapping.set(target.key, created.id);
         await this.api.answerCallback(cb.id, "Created.");
         const text = `✅ Created and selected:\n${formatStatus(created)}`;
-        if (messageId === undefined) await this.api.sendMarkdown(chatId, text);
+        if (messageId === undefined) await target.sendMarkdown(text);
         else {
           try {
             await this.api.editMessage(chatId, messageId, text);
           } catch {
-            await this.api.sendMarkdown(chatId, text);
+            await target.sendMarkdown(text);
           }
         }
-        await this.askModel(chatId, created.id);
+        await this.askModel(target, created.id);
       } catch (err) {
         await this.api.answerCallback(cb.id, `Could not create session: ${errMessage(err)}`);
       }
@@ -819,16 +1246,15 @@ export class PluginTelegramBot {
    * Ask which model + reasoning effort to use. One-shot: the next plain
    * message that parses as a model pick switches, anything else prompts.
    */
-  private async askModel(chatId: number, sessionID: string): Promise<void> {
+  private async askModel(target: ChatTarget, sessionID: string): Promise<void> {
     let current: SessionModel | undefined;
     try {
       current = (await this.getSession(sessionID)).model;
     } catch {
       /* session may be gone already */
     }
-    this.pendingModel.set(String(chatId), sessionID);
-    await this.api.sendRaw(
-      chatId,
+    this.pendingModel.set(target.key, sessionID);
+    await target.sendRaw(
       `Which model + reasoning? Currently: ` +
         (current ? `${current.providerID}/${current.id}${current.variant ? ` (${current.variant})` : ""}` : "unknown") +
         `\nReply with just a pick — a number from /models, ` +
@@ -841,14 +1267,14 @@ export class PluginTelegramBot {
    * Resolve a one-shot model reply. Returns true when consumed (switched or
    * rejected); false means "not a model pick, treat as a prompt".
    */
-  private async tryModelReply(chatId: number, sessionID: string, text: string): Promise<boolean> {
+  private async tryModelReply(target: ChatTarget, sessionID: string, text: string): Promise<boolean> {
     let models: ModelRef[];
     try {
       models = await this.listModels();
     } catch {
       return false;
     }
-    this.lastModels.set(String(chatId), models);
+    this.lastModels.set(target.key, models);
     const effortOnly = parseEffortOnly(text);
     if (effortOnly) {
       try {
@@ -856,8 +1282,7 @@ export class PluginTelegramBot {
         if (!current) return false;
         const known = models.find((m) => m.providerID === current.providerID && m.id === current.id);
         if (known?.variants?.length && !known.variants.map((v) => v.toLowerCase()).includes(effortOnly)) {
-          await this.api.sendRaw(
-            chatId,
+          await target.sendRaw(
             `⚠️ ${current.providerID}/${current.id} has no "${effortOnly}" reasoning effort. Available: ${known.variants.join(", ")}.`,
           );
           return true;
@@ -866,11 +1291,11 @@ export class PluginTelegramBot {
           sessionID,
           model: { providerID: current.providerID, id: current.id, variant: effortOnly },
         });
-        this.mapping.set(chatId, sessionID);
-        await this.api.sendRaw(chatId, `✅ Reasoning effort now ${effortOnly} on ${current.providerID}/${current.id}.`);
+        this.mapping.set(target.key, sessionID);
+        await target.sendRaw(`✅ Reasoning effort now ${effortOnly} on ${current.providerID}/${current.id}.`);
         return true;
       } catch (err) {
-        await this.api.sendRaw(chatId, `⚠️ Could not switch reasoning effort: ${errMessage(err)}`);
+        await target.sendRaw(`⚠️ Could not switch reasoning effort: ${errMessage(err)}`);
         return true;
       }
     }
@@ -881,22 +1306,21 @@ export class PluginTelegramBot {
         sessionID,
         model: { providerID: pick.providerID, id: pick.id, ...(pick.effort ? { variant: pick.effort } : {}) },
       });
-      this.mapping.set(chatId, sessionID);
-      await this.api.sendRaw(
-        chatId,
+      this.mapping.set(target.key, sessionID);
+      await target.sendRaw(
         `✅ Session now uses ${pick.providerID}/${pick.id}${pick.effort ? ` (reasoning: ${pick.effort})` : ""}.`,
       );
       return true;
     } catch (err) {
-      await this.api.sendRaw(chatId, `⚠️ Could not switch model: ${errMessage(err)}`);
+      await target.sendRaw(`⚠️ Could not switch model: ${errMessage(err)}`);
       return true;
     }
   }
 
-  private async handleProjectCommand(chatId: number, arg: string): Promise<void> {    if (!arg) {
-      const current = this.chatProjects.get(chatId);
-      await this.api.sendRaw(
-        chatId,
+  private async handleProjectCommand(target: ChatTarget, arg: string): Promise<void> {
+    if (!arg) {
+      const current = this.chatProjects.get(target.key);
+      await target.sendRaw(
         current
           ? `Project: ${projectName(current)}\n${current}\n\n/sessions and /new are scoped here. Clear with /project clear.`
           : "No project selected. See /projects, then /project <number|path>.",
@@ -904,23 +1328,22 @@ export class PluginTelegramBot {
       return;
     }
     if (/^clear$/i.test(arg)) {
-      this.chatProjects.clear(chatId);
-      await this.api.sendRaw(chatId, "Project cleared — /sessions and /new are unscoped.");
+      this.chatProjects.clear(target.key);
+      await target.sendRaw("Project cleared — /sessions and /new are unscoped.");
       return;
     }
     const projects = await this.listProjects();
-    this.lastProjects.set(String(chatId), projects);
-    const target = resolveProject(arg, projects, this.lastProjects.get(String(chatId)));
-    if (!target) {
-      await this.api.sendRaw(chatId, `⚠️ No project matches "${arg}". See /projects.`);
+    this.lastProjects.set(target.key, projects);
+    const picked = resolveProject(arg, projects, this.lastProjects.get(target.key));
+    if (!picked) {
+      await target.sendRaw(`⚠️ No project matches "${arg}". See /projects.`);
       return;
     }
-    this.chatProjects.set(chatId, target);
-    const sessions = await this.listKnownSessions(target);
-    this.lastList.set(String(chatId), sessions);
-    await this.api.sendMarkdown(
-      chatId,
-      `✅ Project ${projectName(target)}\n${target}\n\n${formatSessionsList(sessions)}\n\nCreate with /new, select with /use.`,
+    this.chatProjects.set(target.key, picked);
+    const sessions = await this.listKnownSessions(picked);
+    this.lastList.set(target.key, sessions);
+    await target.sendMarkdown(
+      `✅ Project ${projectName(picked)}\n${picked}\n\n${formatSessionsList(sessions)}\n\nCreate with /new, select with /use.`,
     );
   }
 
@@ -1004,6 +1427,57 @@ export class PluginTelegramBot {
     }));
   }
 
+  // --- "Opencode Talk" group: one forum topic per session ----------------
+
+  /**
+   * Create (or reuse) the current session's forum topic in the registered
+   * group and bind it: mapping `${groupID}:${threadID}` -> session, project
+   * scope seeded from the session directory, and a first message showing the
+   * model + reasoning already selected. Returns a human-readable summary.
+   */
+  async linkSession(sessionID: string): Promise<string> {
+    return this.withTopicLock(async () => {
+      if (this.groupID === undefined) {
+        throw new Error("no group registered — run /telegram <bot-token> <group-id>");
+      }
+      const s = await this.getSession(sessionID);
+      const existing = this.mapping.chatsForSession(sessionID).find((k) => k.startsWith(`${this.groupID}:`));
+      let threadID: number | undefined;
+      let reused = false;
+      if (existing) {
+        threadID = parseChatKey(existing).threadId;
+        reused = threadID !== undefined;
+      }
+      if (threadID === undefined) {
+        threadID = await this.api.createForumTopic(this.groupID, s.title || sessionID);
+      }
+      const key = `${this.groupID}:${threadID}`;
+      this.mapping.set(key, sessionID);
+      this.topicSessionTitles.set(key, s.title || sessionID);
+      this.knownSessions.add(sessionID);
+      if (s.directory) this.chatProjects.set(key, s.directory);
+      const modelLine = s.model
+        ? `${s.model.providerID}/${s.model.id}${s.model.variant ? ` (reasoning: ${s.model.variant})` : ""}`
+        : "not selected yet — /model <number|provider/model> [effort]";
+      const projectLine = s.directory ? `${projectName(s.directory)} (${s.directory})` : "(none)";
+      if (!reused) {
+        await this.api.sendMarkdown(
+          this.groupID,
+          `✅ Linked to session "${s.title}"\n` +
+            `Project: ${projectLine}\n` +
+            `Model: ${modelLine} — already selected\n\n` +
+            `Write here to prompt this session. /models /model /status /abort /nostr work here too.\n\n` +
+            `GitHub: ${GITHUB_PROFILE}`,
+          threadID,
+        );
+      }
+      return (
+        `topic ${threadID} in group ${this.groupID} ${reused ? "already linked" : "created and linked"} ` +
+        `to session ${sessionID} (project: ${projectLine}, model: ${modelLine}).`
+      );
+    });
+  }
+
   // --- outgoing ----------------------------------------------------------
 
   private async consumeEvents(signal: AbortSignal): Promise<void> {
@@ -1032,28 +1506,26 @@ export class PluginTelegramBot {
     }
   }
 
-  private chatsFor(sessionID: string): number[] {
-    return this.mapping
-      .chatsForSession(sessionID)
-      .map((c) => Number(c))
-      .filter((n) => Number.isFinite(n));
+  /** Mapping keys for a session: plain chat keys or `${chatId}:${threadId}` topic keys. */
+  private chatsFor(sessionID: string): string[] {
+    return this.mapping.chatsForSession(sessionID);
   }
 
   private async routeOutgoing(ev: SessionEvent): Promise<void> {
-    const chats = this.chatsFor(ev.sessionID);
-    if (chats.length === 0) return;
-    for (const chatId of chats) {
-      const key = String(chatId);
+    const keys = this.chatsFor(ev.sessionID);
+    if (keys.length === 0) return;
+    for (const key of keys) {
+      const target = this.targetOfKey(key);
       switch (ev.type) {
         case "session.started":
           this.ensureLive(key, ev.sessionID);
           this.failedRuns.delete(ev.sessionID);
-          await this.ensurePlaceholder(chatId, key, progressLine("Working..."));
+          await this.ensurePlaceholder(key, progressLine("Working..."));
           break;
         case "session.tool_call": {
           const label = ev.text?.trim() || ev.tool?.trim() || "working";
           this.ensureLive(key, ev.sessionID);
-          await this.upsertProgress(chatId, key, progressLine(`${label}...`));
+          await this.upsertProgress(key, progressLine(`${label}...`));
           break;
         }
         case "session.message": {
@@ -1063,35 +1535,39 @@ export class PluginTelegramBot {
           if (ev.delta) {
             st.textBuffer += ev.text;
             const tail = st.textBuffer.slice(-300);
-            await this.upsertProgress(chatId, key, progressLine(`Working...\n\n${tail}`));
+            await this.upsertProgress(key, progressLine(`Working...\n\n${tail}`));
           } else {
             const final = st.textBuffer + ev.text;
-            await this.finishLive(chatId, key, final);
+            await this.finishLive(key, final);
             this.failedRuns.delete(ev.sessionID);
-            await this.maybeSendVoice(chatId, ev.sessionID, final);
+            await this.maybeSendVoice(target, ev.sessionID, final);
           }
           break;
         }
         case "session.completed": {
           const st = this.live.get(key);
           const text = ev.text?.trim() || st?.textBuffer?.trim() || "Done.";
-          await this.finishLive(chatId, key, text);
+          await this.finishLive(key, text);
           this.failedRuns.delete(ev.sessionID);
-          await this.maybeSendVoice(chatId, ev.sessionID, text);
+          await this.maybeSendVoice(target, ev.sessionID, text);
           break;
         }
         case "session.error": {
           if (this.failedRuns.has(ev.sessionID)) break;
           this.failedRuns.add(ev.sessionID);
           this.live.delete(key);
-          await this.api.sendRaw(chatId, `⚠️ Agent error: ${ev.error ?? "unknown error"}`);
+          await target.sendRaw(`⚠️ Agent error: ${ev.error ?? "unknown error"}`);
           break;
         }
         case "session.aborted": {
           if (this.failedRuns.has(ev.sessionID)) break;
           this.failedRuns.add(ev.sessionID);
           this.live.delete(key);
-          await this.api.sendRaw(chatId, "🛑 Task aborted.");
+          await target.sendRaw("🛑 Task aborted.");
+          break;
+        }
+        case "session.updated": {
+          await this.renameTopic(key, ev.sessionID, ev.title);
           break;
         }
         default:
@@ -1101,11 +1577,31 @@ export class PluginTelegramBot {
   }
 
   /**
+   * Mirror a session rename onto its forum topic. Runs per bound key and
+   * skips keys whose topic already carries the current session title (the
+   * last title seen is remembered, so repeated session.updated events and
+   * manual topic renames stay untouched until the session itself is renamed).
+   */
+  private async renameTopic(key: string, sessionID: string, title?: string): Promise<void> {
+    const name = title?.trim();
+    if (!name) return;
+    const { chatId, threadId } = parseChatKey(key);
+    if (threadId === undefined) return; // plain chat, not a topic
+    if (this.topicSessionTitles.get(key) === name) return;
+    try {
+      await this.api.editForumTopic(chatId, threadId, name);
+      this.topicSessionTitles.set(key, name);
+    } catch (err) {
+      log.warn("Topic rename failed", { error: String(err), session: sessionID, key });
+    }
+  }
+
+  /**
    * Talk mode: voice the final assistant text as an audio message, in
    * addition to the text reply. Serialized per session to preserve order.
    * Only main sessions (never subagents); failures are logged, never fatal.
    */
-  private async maybeSendVoice(chatId: number, sessionID: string, text: string): Promise<void> {
+  private async maybeSendVoice(target: ChatTarget, sessionID: string, text: string): Promise<void> {
     if (!this.talkEnabled()) return;
     if (!text.trim() || text.trim() === "Done.") return;
     const prev = this.audioChains.get(sessionID) ?? Promise.resolve();
@@ -1120,7 +1616,7 @@ export class PluginTelegramBot {
         const bytes = await this.speak(text);
         if (!bytes) return;
         try {
-          await this.api.sendAudio(chatId, bytes, "Agent reply");
+          await target.sendAudio(bytes, "Agent reply");
         } catch (err) {
           log.warn("Voice send failed", { error: String(err) });
         }
@@ -1130,7 +1626,8 @@ export class PluginTelegramBot {
     await next;
   }
 
-  private async routeImage(data: Record<string, unknown>): Promise<void> {    const sessionID = typeof data["sessionID"] === "string" ? data["sessionID"] : "";
+  private async routeImage(data: Record<string, unknown>): Promise<void> {
+    const sessionID = typeof data["sessionID"] === "string" ? data["sessionID"] : "";
     const b64 = typeof data["data"] === "string" ? data["data"] : "";
     const filename = typeof data["filename"] === "string" ? data["filename"] : "image.png";
     const caption = typeof data["caption"] === "string" ? data["caption"] : undefined;
@@ -1141,12 +1638,13 @@ export class PluginTelegramBot {
     } catch {
       return;
     }
-    for (const chatId of this.chatsFor(sessionID)) {
+    for (const key of this.chatsFor(sessionID)) {
+      const target = this.targetOfKey(key);
       try {
-        await this.api.sendPhoto(chatId, bytes, filename, caption);
+        await target.sendPhoto(bytes, filename, caption);
       } catch (err) {
         log.warn("Photo send failed", { error: String(err) });
-        await this.api.sendRaw(chatId, `📷 ${filename} (image unavailable)`);
+        await target.sendRaw(`📷 ${filename} (image unavailable)`);
       }
     }
   }
@@ -1160,7 +1658,7 @@ export class PluginTelegramBot {
     return st;
   }
 
-  private async ensurePlaceholder(chatId: number, chatKey: string, text: string): Promise<void> {
+  private async ensurePlaceholder(chatKey: string, text: string): Promise<void> {
     const st = this.live.get(chatKey);
     // placeholderPending closes the race between the prompt ack and the
     // session.started event: both await the same network send, so the flag
@@ -1168,7 +1666,8 @@ export class PluginTelegramBot {
     if (!st || st.placeholderId || st.placeholderPending) return;
     st.placeholderPending = true;
     try {
-      st.placeholderId = await this.api.sendRaw(chatId, text);
+      const target = this.targetOfKey(chatKey);
+      st.placeholderId = await target.sendRaw(text);
       st.lastEdit = Date.now();
     } catch (err) {
       st.placeholderPending = false;
@@ -1176,16 +1675,17 @@ export class PluginTelegramBot {
     }
   }
 
-  private async upsertProgress(chatId: number, chatKey: string, text: string): Promise<void> {
+  private async upsertProgress(chatKey: string, text: string): Promise<void> {
     const st = this.live.get(chatKey);
     if (!st) return;
     if (Date.now() - st.lastEdit < 2000) return;
+    const { chatId, threadId } = parseChatKey(chatKey);
     try {
       if (st.placeholderId) {
         await this.api.editMessage(chatId, st.placeholderId, truncate(text));
         st.lastEdit = Date.now();
       } else {
-        st.placeholderId = await this.api.sendRaw(chatId, text);
+        st.placeholderId = await this.api.sendRaw(chatId, text, undefined, threadId);
         st.lastEdit = Date.now();
       }
     } catch {
@@ -1193,19 +1693,20 @@ export class PluginTelegramBot {
     }
   }
 
-  private async finishLive(chatId: number, chatKey: string, text: string): Promise<void> {
+  private async finishLive(chatKey: string, text: string): Promise<void> {
     const st = this.live.get(chatKey);
     this.live.delete(chatKey);
+    const { chatId, threadId } = parseChatKey(chatKey);
     const chunks = splitMessage(finalLine(text.trim() || "Done."));
     try {
       if (st?.placeholderId && chunks.length === 1) {
         await this.api.editMessage(chatId, st.placeholderId, truncate(chunks[0]!));
       } else {
         if (st?.placeholderId) await this.api.deleteMessage(chatId, st.placeholderId);
-        for (const c of chunks) await this.api.sendRaw(chatId, c);
+        for (const c of chunks) await this.api.sendRaw(chatId, c, undefined, threadId);
       }
     } catch {
-      for (const c of chunks) await this.api.sendRaw(chatId, c);
+      for (const c of chunks) await this.api.sendRaw(chatId, c, undefined, threadId);
     }
   }
 }
@@ -1214,6 +1715,48 @@ function projectKeyboard(projects: string[]): InlineButton[][] {
   return projects
     .slice(0, 20)
     .map((p, i) => [{ text: projectName(p), callback_data: `menu:proj:${i}` }]);
+}
+
+/** Audio extensions for common Telegram mime types. */
+const AUDIO_EXT: Record<string, string> = {
+  "audio/ogg": "ogg",
+  "audio/opus": "opus",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/webm": "webm",
+  "audio/flac": "flac",
+  "audio/aac": "aac",
+  "audio/x-aac": "aac",
+};
+
+/**
+ * Save a Telegram voice/audio message to a temp file so OpenCode can attach
+ * it to the prompt (prompt files only support `file:` URIs). Returns the file
+ * URL + display name, or undefined when it cannot be written.
+ */
+function saveAudioAttachment(
+  bytes: Uint8Array,
+  mimeType: string,
+  messageId?: number,
+  fileName?: string,
+): { uri: string; name: string } | undefined {
+  try {
+    const dir = join(tmpdir(), "opencode-talk-telegram");
+    mkdirSync(dir, { recursive: true });
+    const ext = AUDIO_EXT[mimeType.toLowerCase()] ?? "bin";
+    const base = (fileName ?? "").trim().replace(/[^\w.-]+/g, "_");
+    const name = base ? base.slice(-80) : `telegram-audio-${messageId ?? Date.now()}.${ext}`;
+    const path = join(dir, `${Date.now()}-${messageId ?? 0}-${name}`);
+    writeFileSync(path, bytes);
+    return { uri: pathToFileURL(path).href, name };
+  } catch (err) {
+    log.warn(`Could not save audio attachment: ${String(err)}`);
+    return undefined;
+  }
 }
 
 export function formatModelsList(models: ModelRef[], current?: SessionModel): string {
@@ -1289,6 +1832,8 @@ export interface PluginTelegramBotHandle {
   stop(): void;
   /** DM a chat the project picker (post-connect invite). */
   invite(chatId: number): Promise<void>;
+  /** Create/reuse the session's topic in the registered group; summary string. */
+  linkSession(sessionID: string): Promise<string>;
 }
 
 export async function setupPluginTelegramBot(
@@ -1298,12 +1843,27 @@ export async function setupPluginTelegramBot(
   const noop = (): PluginTelegramBotHandle => ({
     stop: () => {},
     invite: async () => {},
+    linkSession: async () => {
+      throw new Error("Telegram bot is not running — connect it with /telegram <bot-token> <group-id>");
+    },
   });
   const cfg = loadConfig();
   const token = overrides.token ?? cfg.telegramBotToken;
   if (!token) {
     log.warn("TELEGRAM_BOT_TOKEN is not set — in-process Telegram bot disabled (see docs/TELEGRAM_SETUP.md).");
     return noop();
+  }
+  // Telegram allows one getUpdates consumer per token: when another OpenCode
+  // server (or the standalone bot) already polls it, run in secondary mode —
+  // no polling and no event consumer (the poller routes replies), but topic
+  // creation, sends and mapping writes still work from here.
+  const lock = new PollLock(overrides.lockFile ?? defaultPollLockFile(token, cfg.telegramLockFile), token);
+  const holder: PollLockHolder | undefined = lock.acquire();
+  if (holder) {
+    log.warn(
+      `Another process (pid ${holder.pid}) already polls this bot token — polling stays there. ` +
+        `Topic linking and sends still work from this process; stop the other instance to take over.`,
+    );
   }
   const mapping = overrides.mapping ?? new SessionMapping(overrides.mappingFile ?? cfg.sessionMappingFile);
   const chatProjects =
@@ -1324,11 +1884,23 @@ export async function setupPluginTelegramBot(
     allowedUsers: allowed,
     pollTimeoutSec: overrides.pollTimeoutSec,
     projects: overrides.projects ?? cfg.telegramProjects,
+    opencodeProjects: overrides.opencodeProjects ?? (() => listOpenCodeProjectDirectories(cfg)),
     chatProjects,
+    groupID: overrides.groupID,
     talkEnabled: overrides.talkEnabled,
     speak: overrides.speak,
     transcribeVoice: overrides.transcribeVoice,
+    nostrWelcome: overrides.nostrWelcome,
+    lock,
   });
+
+  if (holder) {
+    return {
+      stop: () => {},
+      invite: (chatId: number) => bot.inviteToProjects(chatId),
+      linkSession: (sessionID: string) => bot.linkSession(sessionID),
+    };
+  }
 
   // Single-flight: a reloaded setup takes over, stranding older loops.
   const abort = claimRunSlot("telegram-bot");
@@ -1338,9 +1910,11 @@ export async function setupPluginTelegramBot(
 
   return {
     stop: () => {
+      lock.release();
       releaseRunSlot("telegram-bot", abort);
       bot.stop();
     },
     invite: (chatId: number) => bot.inviteToProjects(chatId),
+    linkSession: (sessionID: string) => bot.linkSession(sessionID),
   };
 }

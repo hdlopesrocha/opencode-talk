@@ -8,6 +8,8 @@ import {
   setupTelegramCommand,
 } from "../src/remote/telegram/pluginCommand.js";
 import { SessionMapping } from "../src/remote/telegram/sessionMapping.js";
+import { saveBotState } from "../src/remote/telegram/botState.js";
+import { writeTokenFile } from "../src/remote/telegram/tokenFile.js";
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), "oc-tg-cmd-"));
@@ -72,6 +74,7 @@ describe("setupTelegramCommand", () => {
         const out = logs.join("\n");
         expect(out).toContain("111");
         expect(out).toContain("http://127.0.0.1:3456");
+        expect(out).toContain("group:");
       } finally {
         stop();
         cleanup();
@@ -259,6 +262,7 @@ describe("setupTelegramCommand token", () => {
     const stop = await setupTelegramCommand(t.ctx, {
       mapping: t.mapping,
       tokenFile: file,
+      stateFile: join(dir, "state.json"),
       fetchImpl: t.fetchImpl,
       onToken: t.onToken,
     });
@@ -329,6 +333,102 @@ describe("setupTelegramCommand token", () => {
     }
   });
 
+  it("registers the group with <token> <group-id> and links this session's topic", async () => {
+    const dir = tmpDir();
+    try {
+      const file = join(dir, "telegram-token");
+      const stateFile = join(dir, "state.json");
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const { ctx, commands } = makeCtx();
+      const fetchImpl = (async () => ({
+        json: async () => ({
+          ok: true,
+          result: { id: 8766321578, is_bot: true, username: "opencode_talk_bot" },
+        }),
+      })) as unknown as typeof fetch;
+      const tokens: { token: string; groupID?: number }[] = [];
+      const links: string[] = [];
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        tokenFile: file,
+        stateFile,
+        fetchImpl,
+        onToken: async (token, groupID) => {
+          tokens.push({ token, groupID });
+        },
+        onLinkSession: async (sessionID) => {
+          links.push(sessionID);
+          return `topic 5 linked to ${sessionID}`;
+        },
+      });
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({
+          sessionID: "ses_1",
+          prompt: { text: `/telegram ${GOOD} -1001234567890` },
+        });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+      expect(tokens).toEqual([{ token: GOOD, groupID: -1001234567890 }]);
+      expect(links).toEqual(["ses_1"]);
+      const state = JSON.parse(readFileSync(stateFile, "utf8")) as { groupID?: number };
+      expect(state.groupID).toBe(-1001234567890);
+      const out = logs.join("\n");
+      expect(out).toContain("group -1001234567890 registered");
+      expect(out).toContain("topic 5 linked to ses_1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a non-numeric group id without saving anything", async () => {
+    const dir = tmpDir();
+    try {
+      const out = await runToken(dir, `/telegram ${GOOD} notanid`, { ok: true });
+      expect(out.logs).toMatch(/usage/i);
+      expect(out.saved).toHaveLength(0);
+      expect(existsSync(out.file)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("bare /telegram ensures the session topic; /telegram status stays side-effect free", async () => {
+    const dir = tmpDir();
+    try {
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const { ctx, commands } = makeCtx();
+      const links: string[] = [];
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        stateFile: join(dir, "state.json"),
+        onLinkSession: async (sessionID) => {
+          links.push(sessionID);
+          return `topic linked to ${sessionID}`;
+        },
+      });
+      const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({ sessionID: "ses_2", prompt: { text: "/telegram" } });
+        expect(links).toEqual(["ses_2"]);
+        await cmd.execute({ sessionID: "ses_2", prompt: { text: "/telegram status" } });
+        expect(links).toEqual(["ses_2"]);
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("warns that everyone is denied when TELEGRAM_ALLOWED_USERS is empty", async () => {
     const dir = tmpDir();
     try {
@@ -344,6 +444,7 @@ describe("setupTelegramCommand token", () => {
       const stop = await setupTelegramCommand(ctx, {
         mapping,
         tokenFile: file,
+        stateFile: join(dir, "state.json"),
         fetchImpl,
         allowedUsers: [],
         onToken: async () => {},
@@ -361,6 +462,115 @@ describe("setupTelegramCommand token", () => {
       const out = logs.join("\n");
       expect(out).toContain("TELEGRAM_ALLOWED_USERS is empty");
       expect(out).not.toContain("project picker DM'd");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("setupTelegramCommand group", () => {
+  const GOOD = "8766321578:AAGwA-EeSDrcUaHScYw-nF2FvHuHRebHE1k";
+
+  it("connects the group alone with /telegram group <id>", async () => {
+    const dir = tmpDir();
+    try {
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const stateFile = join(dir, "state.json");
+      const tokenFile = join(dir, "telegram-token");
+      writeTokenFile(tokenFile, GOOD);
+      const { ctx, commands } = makeCtx();
+      const actions: string[] = [];
+      const links: string[] = [];
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        stateFile,
+        tokenFile,
+        allowedUsers: [111],
+        onControl: async (action) => {
+          actions.push(action);
+          return `${action} done`;
+        },
+        onLinkSession: async (sessionID) => {
+          links.push(sessionID);
+          return `topic linked to ${sessionID}`;
+        },
+      });
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({
+          sessionID: "ses_1",
+          prompt: { text: "/telegram group -1001234567890" },
+        });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+      expect(actions).toEqual(["start"]);
+      expect(links).toEqual(["ses_1"]);
+      const state = JSON.parse(readFileSync(stateFile, "utf8")) as { groupID?: number };
+      expect(state.groupID).toBe(-1001234567890);
+      const out = logs.join("\n");
+      expect(out).toContain("group -1001234567890 registered");
+      expect(out).toContain("topic linked to ses_1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("/telegram group reports the registered group", async () => {
+    const dir = tmpDir();
+    try {
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const stateFile = join(dir, "state.json");
+      saveBotState(stateFile, { groupID: -100999 });
+      const { ctx, commands } = makeCtx();
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        stateFile,
+        tokenFile: join(dir, "token"),
+      });
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({ sessionID: "ses_1", prompt: { text: "/telegram group" } });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+      expect(logs.join("\n")).toContain("-100999");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a non-numeric group without saving", async () => {
+    const dir = tmpDir();
+    try {
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const stateFile = join(dir, "state.json");
+      const { ctx, commands } = makeCtx();
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        stateFile,
+        tokenFile: join(dir, "token"),
+      });
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({ sessionID: "ses_1", prompt: { text: "/telegram group nope" } });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+      expect(logs.join("\n")).toMatch(/usage/i);
+      expect(existsSync(stateFile)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

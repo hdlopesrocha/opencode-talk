@@ -12,3 +12,6 @@ voice.json
 *.key
 *.pem
 secrets*
+dist/
+data/
+!.env.example

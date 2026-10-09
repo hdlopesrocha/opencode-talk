@@ -1,24 +1,39 @@
 {
-  "name": "opencode-voice",
+  "name": "opencode-talk",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Voice input for OpenCode: record the microphone, transcribe it, and send it as a prompt.",
+  "description": "Two-way voice (STT/TTS) plus Telegram and Nostr remote control for OpenCode sessions.",
   "exports": {
     ".": "./index.ts",
-    "./tui": "./tui.ts"
+    "./tui": "./tui.ts",
+    "./remote-plugin": "./remote-plugin/index.ts",
+    "./remote-plugin/rpc": "./remote-plugin/rpc.ts"
   },
   "files": [
     "index.ts",
     "tui.ts",
-    "src"
+    "src",
+    "remote-plugin/index.ts",
+    "remote-plugin/rpc.ts"
   ],
   "scripts": {
     "postinstall": "node scripts/setup.mjs",
     "setup": "node scripts/setup.mjs",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx scripts/smoke.mts",
-    "test": "npm run typecheck && npm run smoke"
+    "test": "npm run typecheck && npm run smoke && vitest run",
+    "bot": "tsx src/remote/telegram/bot.ts",
+    "nostr": "tsx src/remote/nostr/bot.ts",
+    "dev:api": "tsx watch src/remote/session-api/server.ts",
+    "dev:bot": "tsx watch src/remote/telegram/bot.ts",
+    "dev:nostr": "tsx watch src/remote/nostr/bot.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "build:remote": "tsc -p tsconfig.build.json",
+    "start:api": "node dist/session-api/server.js",
+    "start:bot": "node dist/telegram/bot.js",
+    "start:nostr": "node dist/nostr/bot.js",
+    "test:remote": "vitest run"
   },
   "devDependencies": {
     "@opencode/client": "2.0.24",
@@ -26,6 +41,14 @@
     "@types/node": "^24.0.0",
     "solid-js": "^1.9.16",
     "tsx": "^4.19.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "@types/express": "^4.17.21",
+    "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "grammy": "^1.36.2",
+    "nostr-tools": "^2.25.2"
   }
 }

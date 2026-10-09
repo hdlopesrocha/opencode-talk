@@ -1100,6 +1100,31 @@ function errMessage(err: unknown): string {
 }
 
 /**
+ * Build @xmpp/client options from a bare JID. `service` must be the bare
+ * domain so @xmpp/client performs DNS SRV / XEP-0156 discovery; credentials
+ * must be present at construction because SASL captures them up front —
+ * patching `xmpp.options` after `client()` is too late.
+ */
+export function xmppClientOptions(
+  jid: string,
+  password: string,
+  resourceFallback = "opencode-talk",
+): { service: string; domain: string; username: string; password: string; resource: string } {
+  const [bare, resource] = jid.trim().split("/");
+  const [node, domain] = (bare ?? "").split("@");
+  if (!node || !domain) {
+    throw new Error(`XMPP JID must look like user@domain (got "${jid}")`);
+  }
+  return {
+    service: domain,
+    domain,
+    username: node,
+    password,
+    resource: resource || resourceFallback || "opencode-talk",
+  };
+}
+
+/**
  * Real XMPP transport over @xmpp/client (lazy import so unit tests and
  * installs without the optional dep keep working).
  */
@@ -1117,14 +1142,7 @@ async function createRealXmppApi(
     throw new Error("XMPP needs the optional @xmpp/client dependency — run `npm install @xmpp/client` in opencode-talk.");
   }
   const { client, xml } = xmppPkg;
-  const xmpp = client({ service: undefined, domain: undefined, resource: "opencode-talk", username: undefined, password: undefined });
-  // Reconfigure with the full JID: split node/domain/resource.
-  const [bare, resource] = jid.split("/");
-  const [node, domain] = (bare ?? "").split("@");
-  xmpp.options.username = node;
-  xmpp.options.password = password;
-  if (domain) xmpp.options.domain = domain;
-  xmpp.options.resource = resource || mucNick || "opencode-talk";
+  const xmpp = client(xmppClientOptions(jid, password, mucNick));
 
   xmpp.on("error", (err: unknown) => log.warn(`XMPP error: ${String(err)}`));
   xmpp.on("stanza", (stanza: any) => {

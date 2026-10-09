@@ -1,7 +1,8 @@
 # opencode-talk
 
 **Two-way voice for [OpenCode](https://opencode.ai): talk to the agent
-(speech-to-text) and let the agent talk back (text-to-speech).**
+(speech-to-text) and let the agent talk back (text-to-speech) — plus remote
+control of your sessions from Telegram and Nostr.**
 
 - **Speech-to-text (STT)** — press a key or run `/mic`, speak, and the transcript
   becomes a prompt. Local `faster-whisper` by default (offline, private, no API
@@ -15,6 +16,10 @@
   using before sending.
 - Cross-platform capture: PipeWire, PulseAudio, ALSA, `sox`, or `ffmpeg`
   (AVFoundation on macOS, DirectShow on Windows).
+- **Remote control** — drive the same sessions from Telegram (`/sessions`,
+  `/use`, `/status`, `/abort`, photo delivery for agent screenshots) or Nostr
+  encrypted DMs (each session owns an npub; pair with `/nostr <npub>`). See
+  [Remote control](#remote-control-telegram--nostr) below.
 
 > OpenCode's plugin API can't write into the prompt composer, so the transcript
 > is delivered with `session.prompt` (after an editable dialog). TTS, toasts and
@@ -385,9 +390,69 @@ With the `cli.json` install:
 
 ```sh
 npm install        # dev deps + the bundled Python engines (.venv)
-npm run typecheck  # tsc --noEmit
-npm test           # typecheck + a smoke test (plugin setup, config, mock STT)
+npm run typecheck  # tsc --noEmit (voice + remote)
+npm test           # typecheck + voice smoke test + remote vitest suites
+npm run build      # compile the remote runtime (Session API + bots) to dist/
 ```
 
 OpenCode resolves `@opencode/plugin/tui` at runtime, so the plugin runs without
 a build step. The import is only needed locally for TypeScript.
+
+## Remote control (Telegram + Nostr)
+
+The same sessions, from your phone or any Nostr client — through an
+independent **Session API** (REST + SSE) and a small OpenCode plugin. Voice
+and remote are independent halves: use either or both.
+
+```
+Telegram → Telegram Adapter →┐
+                             ├→ Session API → Remote Plugin → OpenCode Session
+Nostr    → Nostr Adapter   →┘
+```
+
+- **Telegram** (`src/remote/telegram/`): grammY standalone bot + in-process
+  plugin bot (`pluginBot.ts`, raw Bot API polling). `/sessions`, `/new`,
+  `/use <n|id>`, `/status`, `/abort`, `/nostr [npub]`; plain text prompts the
+  selected session; progress edits one `🤖 …` message; agent screenshots
+  arrive as photos. The plugin's `/telegram <chat-id>` links a chat from the
+  OpenCode side. Setup: [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md).
+- **Nostr** (`src/remote/nostr/`): encrypted DMs, two modes. Plugin-native
+  (recommended): the remote plugin itself connects to relays — each session
+  owns a keypair, DM its npub directly, pair with OpenCode `/nostr <your-npub>`.
+  Standalone: encrypted-DM client of the Session API, paired via Telegram
+  `/nostr <your-npub>`. Setup: [docs/NOSTR_SETUP.md](docs/NOSTR_SETUP.md).
+- **Session API** (`src/remote/session-api/` + `src/remote/opencode/`): Express
+  server over `@opencode/client` — session CRUD, `POST …/message`, `…/abort`,
+  media store for agent images, SSE fan-out. Reference: [docs/API.md](docs/API.md).
+- **Remote plugin** (`remote-plugin/`, id `telegram-bridge`): typed RPC
+  (`sendMessage`/`abort`/`status`), compact progress events, a
+  `telegram_send_image` agent tool ("run the app 2 minutes and send me the
+  screenshot"), and the in-process Nostr bridge (`/nostr`). Install:
+  [docs/PLUGIN_INSTALL.md](docs/PLUGIN_INSTALL.md).
+
+Quick start (plugin-native Telegram + Nostr — no API/bot processes):
+
+```sh
+export TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+export TELEGRAM_ALLOWED_USERS=123456789
+export NOSTR_RELAYS=wss://nos.lol,wss://relay.snort.social
+export NOSTR_ALLOWED_NPUBS=npub1you...
+opencode service restart
+# Telegram: message the bot, /sessions, /use 1 — or link from OpenCode: /telegram <chat-id>
+# Token alternative: /telegram <bot-token> (verifies, saves 0600, connects)
+# Voice to Telegram: /telegram talk (off with /telegram shut); halt bot: /telegram stop
+# Every plugin command: /talk help
+# Nostr: inside OpenCode: /nostr, then /nostr <your-npub>, then DM the session npub
+```
+
+Quick start (standalone adapters via the Session API):
+
+```sh
+cp .env.example .env   # SESSION_API_TOKEN, TELEGRAM_BOT_TOKEN, ...
+npm run dev:api        # Session API on 127.0.0.1:3456
+npm run dev:bot        # Telegram bot
+npm run dev:nostr      # Nostr adapter (needs NOSTR_RELAYS)
+```
+
+Remote config lives in `.env` (see `.env.example`); voice config stays in
+`voice.json`. Secrets for both are git-ignored.

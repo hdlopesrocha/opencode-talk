@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { PluginXmppBot, parseXmppKey, setupPluginXmppBot, type XmppApi } from "../src/remote/xmpp/pluginBot.js";
+import { PluginXmppBot, parseXmppKey, setupPluginXmppBot, xmppClientOptions, type XmppApi } from "../src/remote/xmpp/pluginBot.js";
 import { SessionMapping } from "../src/remote/telegram/sessionMapping.js";
 import { ChatProjectStore } from "../src/remote/chatProjects.js";
 import { SessionKeyStore } from "../src/remote/nostr/keys.js";
@@ -101,6 +101,28 @@ describe("parseXmppKey", () => {
       to: "talk@conference.example.com",
       thread: "t-abc123",
     });
+  });
+});
+
+describe("xmppClientOptions", () => {
+  it("maps a bare JID to discoverable client options", () => {
+    expect(xmppClientOptions("bot@example.com", "secret", "nick")).toEqual({
+      service: "example.com",
+      domain: "example.com",
+      username: "bot",
+      password: "secret",
+      resource: "nick",
+    });
+  });
+
+  it("keeps an explicit JID resource and falls back to opencode-talk", () => {
+    expect(xmppClientOptions("bot@example.com/desk", "secret").resource).toBe("desk");
+    expect(xmppClientOptions("bot@example.com", "secret", "").resource).toBe("opencode-talk");
+  });
+
+  it("rejects malformed JIDs with a clear error", () => {
+    expect(() => xmppClientOptions("bot", "secret")).toThrow(/user@domain/);
+    expect(() => xmppClientOptions("@example.com", "secret")).toThrow(/user@domain/);
   });
 });
 

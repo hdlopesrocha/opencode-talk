@@ -14,6 +14,7 @@ class FakeControl implements NostrControl {
   starts = 0;
   stops = 0;
   sessions: string[] = [];
+  welcomes: { sessionID: string; peerHex: string }[] = [];
   running = false;
 
   start(): boolean {
@@ -33,6 +34,12 @@ class FakeControl implements NostrControl {
 
   ensureSession(sessionID: string): void {
     this.sessions.push(sessionID);
+  }
+
+  async welcome(sessionID: string, peerHex: string): Promise<boolean> {
+    if (!this.running) return false;
+    this.welcomes.push({ sessionID, peerHex });
+    return true;
   }
 }
 
@@ -73,6 +80,7 @@ function makeHarness(cfg: AppConfig) {
   const botStarts: PluginTelegramBotOverrides[] = [];
   const botStops: number[] = [];
   const invites: number[] = [];
+  const links: string[] = [];
   const deps: RemoteRuntimeDeps = {
     createNostr: (ctx, overrides) => {
       const control = new FakeControl();
@@ -88,11 +96,15 @@ function makeHarness(cfg: AppConfig) {
         invite: async (chatId: number) => {
           invites.push(chatId);
         },
+        linkSession: async (sessionID: string) => {
+          links.push(sessionID);
+          return `linked ${sessionID}`;
+        },
       };
       return handle;
     },
   };
-  return { runtime: new RemoteRuntime(cfg, deps), controls, botStarts, botStops, invites };
+  return { runtime: new RemoteRuntime(cfg, deps), controls, botStarts, botStops, invites, links };
 }
 
 describe("RemoteRuntime", () => {
@@ -126,6 +138,7 @@ describe("RemoteRuntime", () => {
     expect(controls[0]!.overrides.chatProjects).toBe(runtime.nostrProjects);
     expect(botStarts[0]!.mapping).toBe(runtime.mapping);
     expect(botStarts[0]!.keys).toBe(runtime.keys);
+    expect(typeof botStarts[0]!.nostrWelcome).toBe("function");
     expect(runtime.locationCount()).toBe(3);
 
     // Removing a non-primary location leaves the loops alone.
@@ -179,7 +192,7 @@ describe("RemoteRuntime", () => {
       JSON.stringify({ stopped: true, nostrStopped: true, talk: false }),
     );
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const { runtime, controls, botStarts } = makeHarness(cfgFor(dir));
+    const { runtime, controls, botStarts, links } = makeHarness(cfgFor(dir));
 
     await runtime.addLocation("a", { ctx: makeCtx().ctx });
     expect(controls).toHaveLength(1);
@@ -193,10 +206,15 @@ describe("RemoteRuntime", () => {
     expect(controls[0]!.control.starts).toBe(1);
     runtime.nostrEnsureSession("ses_1");
     expect(controls[0]!.control.sessions).toEqual(["ses_1"]);
+    await expect(runtime.nostrWelcome("ses_1", "peerhex")).resolves.toBe(true);
+    expect(controls[0]!.control.welcomes).toEqual([{ sessionID: "ses_1", peerHex: "peerhex" }]);
 
-    await runtime.telegramStart("123:abc");
+    await runtime.telegramStart("123:abc", -1001234567890);
     expect(botStarts).toHaveLength(1);
     expect(botStarts[0]!.token).toBe("123:abc");
+    expect(botStarts[0]!.groupID).toBe(-1001234567890);
+    await expect(runtime.telegramLinkSession("ses_1")).resolves.toBe("linked ses_1");
+    expect(links).toEqual(["ses_1"]);
   });
 
   it("persists bot stop/start and forwards invites", async () => {

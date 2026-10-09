@@ -15,6 +15,12 @@ import {
   type PluginTelegramBotHandle,
   type PluginTelegramBotOverrides,
 } from "./telegram/pluginBot.js";
+import {
+  setupPluginXmppBot,
+  type PluginXmppBotHandle,
+  type PluginXmppBotOverrides,
+} from "./xmpp/pluginBot.js";
+import { loadXmppState, saveXmppState } from "./xmpp/xmppState.js";
 
 const log = createLogger("plugin-runtime");
 
@@ -32,6 +38,7 @@ export interface RuntimeLocation {
 export interface RemoteRuntimeDeps {
   createNostr?: (ctx: any, overrides: PluginNostrOverrides) => NostrControl;
   setupTelegramBot?: (ctx: any, overrides: PluginTelegramBotOverrides) => Promise<PluginTelegramBotHandle>;
+  setupXmppBot?: (ctx: any, overrides: PluginXmppBotOverrides) => Promise<PluginXmppBotHandle>;
 }
 
 const RUNTIME_SLOT = Symbol.for("opencode-talk.remote-runtime");
@@ -63,13 +70,18 @@ export class RemoteRuntime {
   readonly nostrProjects: ChatProjectStore;
   /** Telegram-side project selections (TELEGRAM_PROJECTS_FILE). */
   readonly telegramProjects: ChatProjectStore;
+  /** XMPP-side project selections (XMPP_PROJECTS_FILE). */
+  readonly xmppProjects: ChatProjectStore;
   readonly mapping: SessionMapping;
+  /** XMPP chat->session mapping (XMPP_MAPPING_FILE, JID keys). */
+  readonly xmppMapping: SessionMapping;
 
   private readonly deps: Required<RemoteRuntimeDeps>;
   private readonly locations = new Map<string, RuntimeLocation>();
   private primaryKey: string | undefined;
   private nostr: NostrControl | undefined;
   private telegram: PluginTelegramBotHandle | undefined;
+  private xmpp: PluginXmppBotHandle | undefined;
   private bridgeAbort: AbortController | undefined;
   private speak: ((text: string) => Promise<Uint8Array | null>) | undefined;
 
@@ -78,12 +90,15 @@ export class RemoteRuntime {
     this.deps = {
       createNostr: deps.createNostr ?? createNostrControl,
       setupTelegramBot: deps.setupTelegramBot ?? setupPluginTelegramBot,
+      setupXmppBot: deps.setupXmppBot ?? setupPluginXmppBot,
     };
     this.keys = new SessionKeyStore(cfg.nostrKeysFile);
     this.peers = new PeerStore(cfg.nostrPeersFile);
     this.nostrProjects = new ChatProjectStore(cfg.nostrProjectsFile);
     this.telegramProjects = new ChatProjectStore(cfg.telegramChatProjectsFile);
+    this.xmppProjects = new ChatProjectStore(cfg.xmppChatProjectsFile);
     this.mapping = new SessionMapping(cfg.sessionMappingFile);
+    this.xmppMapping = new SessionMapping(cfg.xmppMappingFile);
   }
 
   locationCount(): number {
@@ -145,12 +160,20 @@ export class RemoteRuntime {
     this.nostr?.ensureSession(sessionID);
   }
 
+  /** DM the pairing welcome from the session's key; false when the bridge is stopped. */
+  nostrWelcome(sessionID: string, peerHex: string): Promise<boolean> {
+    return this.nostr ? this.nostr.welcome(sessionID, peerHex) : Promise.resolve(false);
+  }
+
   // --- Telegram (driven by every location's `/telegram` command) ----------
 
-  /** Start (or restart) polling; persists the running state. */
-  async telegramStart(token?: string): Promise<void> {
-    saveBotState(this.cfg.telegramStateFile, { stopped: false });
-    await this.spawnTelegram(token);
+  /** Start (or restart) polling; persists the running state and (when given) the group. */
+  async telegramStart(token?: string, groupID?: number): Promise<void> {
+    saveBotState(this.cfg.telegramStateFile, {
+      stopped: false,
+      ...(groupID !== undefined ? { groupID } : {}),
+    });
+    await this.spawnTelegram(token, groupID);
   }
 
   /** Halt polling and persist the stopped state. */
@@ -161,6 +184,37 @@ export class RemoteRuntime {
 
   telegramInvite(chatId: number): Promise<void> {
     return this.telegram?.invite(chatId) ?? Promise.resolve();
+  }
+
+  /** Create/reuse a session's topic in the registered group. Undefined when no bot runs. */
+  telegramLinkSession(sessionID: string): Promise<string | undefined> {
+    return this.telegram ? this.telegram.linkSession(sessionID) : Promise.resolve(undefined);
+  }
+
+  // --- XMPP (driven by every location's `/xmpp` command) ------------------
+
+  /** Start (or restart) the connection; persists running state and (when given) the room. */
+  async xmppStart(jid?: string, password?: string, mucRoom?: string): Promise<void> {
+    saveXmppState(this.cfg.xmppStateFile, {
+      stopped: false,
+      ...(mucRoom !== undefined ? { mucRoom } : {}),
+    });
+    await this.spawnXmpp(jid, password, mucRoom);
+  }
+
+  /** Halt the connection and persist the stopped state. */
+  xmppStop(): void {
+    saveXmppState(this.cfg.xmppStateFile, { stopped: true });
+    this.stopXmppInternal();
+  }
+
+  xmppInvite(jid: string): Promise<void> {
+    return this.xmpp?.invite(jid) ?? Promise.resolve();
+  }
+
+  /** Create/reuse a session's thread in the registered room. Undefined when no bot runs. */
+  xmppLinkSession(sessionID: string): Promise<string | undefined> {
+    return this.xmpp ? this.xmpp.linkSession(sessionID) : Promise.resolve(undefined);
   }
 
   // --- internals ------------------------------------------------------------
@@ -201,6 +255,17 @@ export class RemoteRuntime {
         console.error(`[telegram-bridge] Telegram bot failed to start: ${String(err)}`);
       }
     }
+
+    const xmppState = loadXmppState(this.cfg.xmppStateFile);
+    if (xmppState.stopped) {
+      console.log("[xmpp-bridge] XMPP bot stopped (use /xmpp start to resume).");
+    } else {
+      try {
+        await this.spawnXmpp();
+      } catch (err) {
+        console.error(`[xmpp-bridge] XMPP bot failed to start: ${String(err)}`);
+      }
+    }
   }
 
   private stopLoops(): void {
@@ -212,18 +277,22 @@ export class RemoteRuntime {
     }
     this.nostr = undefined;
     this.stopTelegramInternal();
+    this.stopXmppInternal();
   }
 
-  private async spawnTelegram(token?: string): Promise<void> {
+  private async spawnTelegram(token?: string, groupID?: number): Promise<void> {
     const location = this.primary();
     if (!location) return;
     this.stopTelegramInternal();
+    const effectiveGroup = groupID ?? loadBotState(this.cfg.telegramStateFile).groupID;
     const overrides: PluginTelegramBotOverrides = {
       mapping: this.mapping,
       keys: this.keys,
       peers: this.peers,
       chatProjects: this.telegramProjects,
       talkEnabled: () => loadBotState(this.cfg.telegramStateFile).talk,
+      nostrWelcome: (sessionID, peerHex) => this.nostrWelcome(sessionID, peerHex),
+      ...(effectiveGroup !== undefined ? { groupID: effectiveGroup } : {}),
     };
     if (token) overrides.token = token;
     if (this.speak) overrides.speak = this.speak;
@@ -237,6 +306,35 @@ export class RemoteRuntime {
       /* ignore */
     }
     this.telegram = undefined;
+  }
+
+  private async spawnXmpp(jid?: string, password?: string, mucRoom?: string): Promise<void> {
+    const location = this.primary();
+    if (!location) return;
+    this.stopXmppInternal();
+    const effectiveRoom = mucRoom ?? loadXmppState(this.cfg.xmppStateFile).mucRoom ?? this.cfg.xmppRoom;
+    const overrides: PluginXmppBotOverrides = {
+      mapping: this.xmppMapping,
+      keys: this.keys,
+      peers: this.peers,
+      chatProjects: this.xmppProjects,
+      talkEnabled: () => loadXmppState(this.cfg.xmppStateFile).talk,
+      nostrWelcome: (sessionID, peerHex) => this.nostrWelcome(sessionID, peerHex),
+      ...(effectiveRoom !== undefined ? { mucRoom: effectiveRoom } : {}),
+    };
+    if (jid) overrides.jid = jid;
+    if (password) overrides.password = password;
+    if (this.speak) overrides.speak = this.speak;
+    this.xmpp = await this.deps.setupXmppBot(location.ctx, overrides);
+  }
+
+  private stopXmppInternal(): void {
+    try {
+      this.xmpp?.stop();
+    } catch {
+      /* ignore */
+    }
+    this.xmpp = undefined;
   }
 
   /** Native events -> compact RPC events, emitted once per process. */

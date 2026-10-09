@@ -7,6 +7,8 @@ import { setupNostrLocation } from "../src/remote/nostr/pluginBridge.js";
 import { saveBotState } from "../src/remote/telegram/botState.js";
 import { setupTalkCommand } from "../src/remote/telegram/talkCommand.js";
 import { setupTelegramCommand, type TelegramControlAction } from "../src/remote/telegram/pluginCommand.js";
+import { setupXmppCommand, type XmppControlAction } from "../src/remote/xmpp/pluginCommand.js";
+import { saveXmppState } from "../src/remote/xmpp/xmppState.js";
 import { synthesizeSpeech, type VoiceLike } from "../src/remote/telegram/voice.js";
 import { getRemoteRuntime, locationKeyFor } from "../src/remote/pluginRuntime.js";
 import { TelegramBridge } from "./rpc.js";
@@ -41,7 +43,8 @@ const IMAGE_MIME_BY_EXT: Record<string, string> = {
  * - Nostr bridge (in-process): each session owns a Nostr keypair and
  *   answers encrypted DMs directly — no Session API or Telegram needed.
  *   Pair locally with `/nostr` (show session npub) and
- *   `/nostr <your-npub>` (authorize a peer).
+ *   `/nostr <your-npub>` (pair a peer and DM it a welcome with the model +
+ *   reasoning already selected).
  * - Telegram bot (in-process): long-polls the Bot API directly with
  *   TELEGRAM_BOT_TOKEN — `/sessions`, `/new`, `/use`, `/status`, `/abort`,
  *   `/nostr [npub]`, plain-text prompts, progress edits and photo delivery.
@@ -135,6 +138,7 @@ export default Plugin.define({
           stop: () => runtime.nostrStop(),
           isRunning: () => runtime.nostrRunning(),
           ensureSession: (sessionID: string) => runtime.nostrEnsureSession(sessionID),
+          welcome: (sessionID: string, peerHex: string) => runtime.nostrWelcome(sessionID, peerHex),
         },
         stateFile: botStateFile,
       });
@@ -260,8 +264,9 @@ export default Plugin.define({
     try {
       stopTelegram = await setupTelegramCommand(ctx as never, {
         mapping: runtime.mapping,
-        onToken: async (token) => {
-          await runtime.telegramStart(token);
+        onToken: async (token, groupID) => {
+          await runtime.telegramStart(token, groupID);
+          if (groupID !== undefined) return; // group mode: topics are linked per session instead
           const invited: number[] = [];
           for (const uid of remoteCfg.telegramAllowedUsers) {
             try {
@@ -276,9 +281,59 @@ export default Plugin.define({
           }
         },
         onControl: telegramControl,
+        onLinkSession: (sessionID: string) => runtime.telegramLinkSession(sessionID),
       });
     } catch (err) {
       console.error(`[telegram-bridge] Telegram command failed to start: ${String(err)}`);
+    }
+
+    // --- /xmpp command: works in TUI/desktop/web ---------------------------
+    // Mirror of /telegram over XMPP (JID + password, MUC threads per session).
+    async function xmppControl(action: XmppControlAction): Promise<string> {
+      switch (action) {
+        case "stop":
+          runtime.xmppStop();
+          return "bot stopped — connection and replies halted. /xmpp start to resume.";
+        case "start": {
+          await runtime.xmppStart();
+          return loadConfig().xmppJid
+            ? "bot started — message it with /start."
+            : "no credentials configured — connect with /xmpp <jid> <password>.";
+        }
+        case "talk":
+          saveXmppState(remoteCfg.xmppStateFile, { talk: true });
+          return "TTS to XMPP on — agent replies also arrive as voice messages in linked chats. /xmpp shut to stop.";
+        case "shut":
+          saveXmppState(remoteCfg.xmppStateFile, { talk: false });
+          return "TTS to XMPP off.";
+      }
+    }
+
+    let stopXmpp: (() => void) | undefined;
+    try {
+      stopXmpp = await setupXmppCommand(ctx as never, {
+        mapping: runtime.xmppMapping,
+        onAccount: async (jid, password, mucRoom) => {
+          await runtime.xmppStart(jid, password, mucRoom);
+          if (mucRoom !== undefined) return; // room mode: threads are linked per session instead
+          const invited: string[] = [];
+          for (const jidTo of remoteCfg.xmppAllowedUsers) {
+            try {
+              await runtime.xmppInvite(jidTo);
+              invited.push(jidTo);
+            } catch (err) {
+              console.error(`[xmpp-bridge] Project invite to ${jidTo} failed: ${String(err)}`);
+            }
+          }
+          if (invited.length === 0 && remoteCfg.xmppAllowedUsers.size > 0) {
+            console.error("[xmpp-bridge] Project invites failed for all allowed users.");
+          }
+        },
+        onControl: xmppControl,
+        onLinkSession: (sessionID: string) => runtime.xmppLinkSession(sessionID),
+      });
+    } catch (err) {
+      console.error(`[xmpp-bridge] XMPP command failed to start: ${String(err)}`);
     }
 
     // --- /talk command: TTS to Telegram + full plugin catalogue ------------
@@ -296,6 +351,11 @@ export default Plugin.define({
       void runtime.removeLocation(locationKey, location);
       try {
         stopTelegram?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        stopXmpp?.();
       } catch {
         /* ignore */
       }

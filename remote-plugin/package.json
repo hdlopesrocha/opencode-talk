@@ -1,0 +1,11 @@
+{
+  "name": "opencode-talk-remote",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Remote control (Telegram RPC bridge + in-process Nostr bridge) for OpenCode sessions.",
+  "exports": {
+    ".": "./index.ts",
+    "./rpc": "./rpc.ts"
+  }
+}

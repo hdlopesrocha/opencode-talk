@@ -7,10 +7,11 @@ import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
 /** `/mic <arg>` subcommands. */
-const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "parar", "para", "cancelar", "cancela"])
+const CANCEL_WORDS = new Set(["stop", "cancel", "abort", "off", "parar", "para", "cancelar", "cancela"])
 const SEND_WORDS = new Set(["send", "submit", "enviar", "submeter", "terminar", "concluir"])
 const START_WORDS = new Set(["start", "begin", "iniciar", "comecar", "começar", "gravar", "record"])
 const HELP_WORDS = new Set(["help", "ajuda", "?"])
+const STATUS_WORDS = new Set(["status", "estado", "info"])
 
 /** `/sound <arg>` subcommands. */
 const TTS_ON_WORDS = new Set(["start", "on", "ligar", "liga", "enable", "ativa", "ativar"])
@@ -98,13 +99,22 @@ export default Plugin.define({
       editor.add({
         name: "mic",
         description:
-          "Microphone. `/mic` toggles (start, then stop & transcribe); `/mic start` records, `/mic send` stops & transcribes, `/mic abort` cancels, `/mic help` shows usage",
+          "Microphone. `/mic` toggles (start, then stop & transcribe); `/mic start` records, `/mic send` stops & transcribes, `/mic abort` cancels, `/mic status` shows state, `/mic help` shows usage",
         execute: async ({ sessionID, prompt, delivery }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?mic\b/, "").trim()
           console.log(`[voice] /mic ${arg || "toggle"}${recording ? " (recording)" : ""}`)
           if (HELP_WORDS.has(arg)) {
             console.log(MIC_HELP)
+            return
+          }
+          if (STATUS_WORDS.has(arg)) {
+            refresh()
+            console.log(
+              `[voice] mic status: ${recording ? "recording" : "idle"}\n` +
+                `backend: ${cfg.backend}${cfg.backend === "api" ? ` (model ${cfg.model} @ ${cfg.baseURL})` : ""}\n` +
+                `recorder: ${cfg.recorder} @ ${cfg.sampleRate}Hz, max ${cfg.maxDuration}s`,
+            )
             return
           }
           if (CANCEL_WORDS.has(arg)) {
@@ -126,13 +136,22 @@ export default Plugin.define({
       editor.add({
         name: "sound",
         description:
-          "Toggle speech of agent messages: /sound (toggle), /sound start, /sound stop, /sound pause, /sound help",
+          "Toggle speech of agent messages: /sound (toggle), /sound on, /sound off, /sound pause, /sound status, /sound help",
         execute: async ({ prompt }) => {
           const raw = String((prompt as { text?: string })?.text ?? "")
           const arg = raw.trim().toLowerCase().replace(/^\/?sound\b/, "").trim()
           console.log(`[voice] /sound ${arg || "toggle"}`)
           if (HELP_WORDS.has(arg)) {
             console.log(SOUND_HELP)
+            return
+          }
+          if (STATUS_WORDS.has(arg)) {
+            refresh()
+            console.log(
+              `[voice] sound status: ${cfg.tts ? "on" : "off"} (engine ${cfg.ttsEngine})\n` +
+                `voices: pt ${cfg.ttsVoice} · en ${cfg.ttsVoiceEn} · fr ${cfg.ttsVoiceFr} (auto ${cfg.ttsAuto ? "on" : "off"})\n` +
+                `reasoning: ${cfg.ttsReasoning ? "spoken" : "skipped"}, rate ${cfg.ttsRate}, max ${cfg.ttsMaxChars} chars`,
+            )
             return
           }
           if (TTS_ON_WORDS.has(arg)) {

@@ -419,7 +419,7 @@ export default Plugin.define({
         {
           id: "voice.sound.toggle",
           title: "Sound: ligar/desligar voz",
-          description: "Voz do agente: /sound (toggle), /sound start, /sound stop, /sound pause, /sound help",
+          description: "Voz do agente: /sound (toggle), /sound on, /sound off, /sound pause, /sound help",
           group: "Voice",
           bind: false,
           palette: true,

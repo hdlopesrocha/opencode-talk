@@ -160,7 +160,8 @@ Override the command binding in `cli.json`:
    discard). Set `OPENCODE_VOICE_SUBMIT=send` to send directly instead.
 5. To **cancel** (discard, send nothing), run `/mic abort` (`cancel`, `abort`,
    `parar` also work).
-6. Run `/mic help` (or `/sound help`) any time to see the command reference.
+6. Run `/mic help` (or `/sound help`) any time to see the command reference,
+   `/mic status` (or `/sound status`) for current state.
 
 Recording also stops automatically after `maxDuration` seconds (default 120).
 
@@ -234,10 +235,11 @@ OPENCODE_VOICE_TTS_VOICE_EN=en-GB-SoniaNeural    # British English
 ### Sound commands
 
 - `/sound` — toggle speech on/off. When turning it on it says “Voz ligada.”
-- `/sound start` (`on`, `ligar`) — enable speech.
-- `/sound stop` (`off`, `desligar`) — disable speech **and** stop speaking
+- `/sound on` (`start`, `ligar`) — enable speech.
+- `/sound off` (`stop`, `desligar`) — disable speech **and** stop speaking
   immediately (cuts the current utterance and clears the queue).
 - `/sound pause` (`silence`, `calar`, `parar`) — silence now, but keep speech on.
+- `/sound status` — show switch, engine, voices and limits.
 - `/sound help` (`ajuda`) — show the command usage.
 
 Starting a recording (`/mic`, `/mic start`) automatically silences the current

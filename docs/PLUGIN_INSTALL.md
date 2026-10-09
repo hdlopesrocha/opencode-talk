@@ -38,7 +38,8 @@ rich progress labels.
   plain-text prompts, progress edits, photo delivery, optional TTS voice
   messages (`/talk`).
   Unknown `/commands` are forwarded as-is to the selected session for
-  OpenCode to run. `TELEGRAM_PROJECTS` seeds the project list.
+  OpenCode to run. `/projects` lists OpenCode's own project list (the TUI /
+  desktop picker) plus `TELEGRAM_PROJECTS`.
   Gated by `TELEGRAM_ALLOWED_USERS` (fail-closed); unset token = bot stays
   disabled. Shares `SESSION_MAPPING_FILE` with the standalone bot and the
   `/telegram` link command. Details: [Telegram setup](TELEGRAM_SETUP.md).

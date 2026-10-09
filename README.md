@@ -1,29 +1,71 @@
 # opencode-talk
 
-**Two-way voice for [OpenCode](https://opencode.ai): talk to the agent
-(speech-to-text) and let the agent talk back (text-to-speech) — plus remote
-control of your sessions from Telegram and Nostr.**
+**Voice + remote control for [OpenCode](https://opencode.ai): talk to the agent
+and let it talk back, and drive the same sessions from Telegram or any Nostr
+client — including a Telegram group where every session gets its own topic.**
 
-- **Speech-to-text (STT)** — press a key or run `/mic`, speak, and the transcript
-  becomes a prompt. Local `faster-whisper` by default (offline, private, no API
-  key), or any OpenAI-compatible `/audio/transcriptions` endpoint.
+**Voice**
+
+- **Speech-to-text (STT)** — press `<leader>v` (or run `/mic`), speak, and the
+  transcript becomes a prompt. Local `faster-whisper` by default (offline,
+  private, no API key), or any OpenAI-compatible `/audio/transcriptions`
+  endpoint; PipeWire, PulseAudio, ALSA, `sox` and `ffmpeg` (AVFoundation on
+  macOS, DirectShow on Windows) are auto-detected.
 - **Text-to-speech (TTS)** — the main agent's replies are **spoken aloud** with
-  neural voices (edge-tts), with automatic **pt / en / fr** language detection
-  and a robotic `spd-say` fallback.
-- **Editable send** — by default `/mic send` opens an editable dialog so you can
-  fix the transcript before it is sent.
-- **Optional polish** — run the transcript through the model you are already
-  using before sending.
-- Cross-platform capture: PipeWire, PulseAudio, ALSA, `sox`, or `ffmpeg`
-  (AVFoundation on macOS, DirectShow on Windows).
-- **Remote control** — drive the same sessions from Telegram (`/sessions`,
-  `/use`, `/status`, `/abort`, photo delivery for agent screenshots) or Nostr
-  encrypted DMs (each session owns an npub; pair with `/nostr <npub>`). See
+  neural voices (edge-tts), automatic **pt / en / fr** language detection and a
+  robotic `spd-say` fallback. Runs in the server plugin, so every client gets
+  it; reasoning is opt-in.
+- **Editable send + polish** — by default `/mic send` opens an editable dialog
+  so you can fix the transcript before it is sent, and the optional `polish`
+  step runs it through the model you are already using.
+- **Voice in Telegram** — incoming voice notes and audio files are transcribed
+  and attached to the prompt, so OpenCode receives the audio itself even when
+  transcription fails; `/talk` sends agent replies back as spoken audio
+  messages.
+- Commands: `/mic` (`start|send|abort|off|status|help`), `/mic-setup`
+  (settings menu), `/sound` (`on|off|pause|status|help`), `/talk` — `/talk
+  help` lists every command this plugin adds.
+
+**Remote control**
+
+- **Telegram** — in-process bot: project/session menus (`/menu`, `/projects`,
+  `/project`, `/sessions`, `/new`, `/use`), model + reasoning switching
+  (`/models`, `/model <number|provider/model> [effort]`), `/status`, `/abort`,
+  `/nostr`, plain-text prompts, in-place progress edits, agent photos and
+  voice replies. Editing a submitted message stops the current run and
+  re-prompts with the new text. `/telegram <bot-token> <group-id>` registers
+  the **"Opencode Talk" group**, where every session gets its own forum topic
+  seeded with the session's project + model/reasoning; creating a topic there
+  creates a new session, and session renames rename the topic. `/projects`
+  lists every OpenCode project (TUI/desktop picker) plus `TELEGRAM_PROJECTS`,
+  `/telegram <chat-id>` links extra private chats, and
+  `/telegram stop|start|talk|shut` controls the bot.
+- **XMPP** — same features as Telegram over XMPP: `/menu`, `/projects`,
+  `/project`, `/sessions`, `/new`, `/use`, `/models`, `/model <number|provider/model> [effort]`,
+  `/status`, `/abort`, `/nostr`, plain-text prompts, progress + voice replies.
+  `/xmpp <jid> <password> [muc-room]` connects the bot and registers the MUC
+  room (one thread per session, seeded with project + model/reasoning);
+  `/xmpp <token>` saves just the password when the JID comes from `XMPP_JID`.
+  `/xmpp <contact-jid>` links extra direct chats, `/xmpp room <muc-room>`
+  registers the room, and `/xmpp stop|start|talk|shut` controls the bot.
+  Setup: [docs/XMPP_SETUP.md](docs/XMPP_SETUP.md).
+- **Nostr** — every session owns its own keypair (npub). Pair with
+  `/nostr <your-npub>`: the session DMs a welcome with the model + reasoning
+  already selected. Encrypted NIP-04 DMs then drive the session with the same
+  commands, scope projects, switch model/reasoning, abort, and receive agent
+  images (Blossom). `/nostr off|on` halts/resumes relay traffic.
+- **Any other `/command`** — forwarded to OpenCode as-is, so custom commands
+  and skills work remotely too.
+- **Agent tool** — `telegram_send_image` lets the agent push screenshots,
+  charts and renders to your Telegram/Nostr chat.
+- **Session API + remote plugin** — REST + SSE for any client, typed RPC and
+  compact progress events, single-flight loops and a shared poll lock that
+  keeps exactly one Telegram poller even with several OpenCode servers. See
   [Remote control](#remote-control-telegram--nostr) below.
 
 > OpenCode's plugin API can't write into the prompt composer, so the transcript
-> is delivered with `session.prompt` (after an editable dialog). TTS, toasts and
-> the `/mic-setup` settings menu are **terminal-TUI** features; the web/desktop
+> is delivered with `session.prompt` (after an editable dialog). Toasts and the
+> `/mic-setup` settings menu are **terminal-TUI** features; the web/desktop
 > clients only run the server commands.
 
 ## How it works
@@ -414,8 +456,11 @@ Nostr    → Nostr Adapter   →┘
   plugin bot (`pluginBot.ts`, raw Bot API polling). `/sessions`, `/new`,
   `/use <n|id>`, `/status`, `/abort`, `/nostr [npub]`; plain text prompts the
   selected session; progress edits one `🤖 …` message; agent screenshots
-  arrive as photos. The plugin's `/telegram <chat-id>` links a chat from the
-  OpenCode side. Setup: [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md).
+  arrive as photos. From OpenCode, `/telegram <bot-token> <group-id>`
+  registers an **"Opencode Talk" group and `/telegram` gives every session its
+  own forum topic** (project + model/reasoning seeded from the session).
+  `/telegram <chat-id>` still links an extra private chat.
+  Setup: [docs/TELEGRAM_SETUP.md](docs/TELEGRAM_SETUP.md).
 - **Nostr** (`src/remote/nostr/`): encrypted DMs, two modes. Plugin-native
   (recommended): the remote plugin itself connects to relays — each session
   owns a keypair, DM its npub directly, pair with OpenCode `/nostr <your-npub>`.
@@ -439,11 +484,91 @@ export NOSTR_RELAYS=wss://nos.lol,wss://relay.snort.social
 export NOSTR_ALLOWED_NPUBS=npub1you...
 opencode service restart
 # Telegram: message the bot, /sessions, /use 1 — or link from OpenCode: /telegram <chat-id>
-# Token alternative: /telegram <bot-token> (verifies, saves 0600, connects)
+# Bot + group: /telegram <bot-token> <group-id>, or /telegram group <group-id> after /telegram <bot-token>
 # Voice to Telegram: /telegram talk (off with /telegram shut); halt bot: /telegram stop
 # Every plugin command: /talk help
 # Nostr: inside OpenCode: /nostr, then /nostr <your-npub>, then DM the session npub
 ```
+
+### Telegram group: one topic per OpenCode session (recommended)
+
+Use a single Telegram group as a session hub instead of private chats.
+One-time setup:
+
+#### 1. Create the bot with @BotFather
+
+1. Open a chat with [@BotFather](https://t.me/BotFather) and send `/newbot`.
+2. Pick a display name (e.g. `OpenCode Talk`) and a username ending in `bot`
+   (e.g. `opencode_talk_bot`).
+3. Copy the token BotFather replies with (`123456:ABC-DEF...`) — treat it like
+   a password. The plugin saves it to `TELEGRAM_TOKEN_FILE` (mode 0600).
+4. Optional but recommended:
+   - `/setjoingroups` → **Enable** (default) so the bot can be added to the
+     group.
+   - `/setprivacy` → select the bot → **Disable**. An admin bot receives all
+     group messages anyway (see step 3), but disabling privacy keeps
+     plain-text prompts working if the bot is ever demoted.
+
+#### 2. Create the group
+
+1. Telegram → **New Group** → name it **Opencode Talk** → add the bot as a
+   member (search its @username).
+2. Open the group → **Edit** → enable **Topics** (forum mode). Without Topics
+   the bot cannot create the per-session topics.
+3. Find the group id (negative, e.g. `-1001234567890`):
+   - add [@userinfobot](https://t.me/userinfobot) to the group — it posts the
+     group id (remove it afterwards), or
+   - send a message in the group and open
+     `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser — look for
+     `"chat":{"id":-100…}`. This needs the bot to be an admin or to have
+     privacy disabled (steps 1.4/3).
+
+#### 3. Give the bot permissions in the group
+
+1. Group → **Edit** → **Administrators** → **Add Admin** → select the bot.
+2. Enable:
+   - **Manage Topics** — required: creates the per-session forum topics.
+   - **Send Messages** — required (on by default).
+   - **Delete Messages** — optional: lets it tidy its own progress messages.
+3. Save. As an admin the bot receives every group message, regardless of
+   privacy mode.
+
+#### 4. Register the group and use it
+
+1. In OpenCode run `/telegram <bot-token> <group-id>`: the token is verified,
+   saved locked-down (`TELEGRAM_TOKEN_FILE`, mode 0600), the bot connects, and
+   the group is registered. You can also do it in two steps — connect the bot
+   with `/telegram <bot-token>`, then the group with
+   `/telegram group <group-id>`.
+2. From any session run `/telegram` (or any time later): the bot creates or
+   reuses a topic named after the session, binds it, and posts the first
+   message showing the session's **project** and **model + reasoning already
+   selected**.
+3. Write in a topic to prompt that session — progress edits and results stay
+   in the topic. `/models`, `/model`, `/status`, `/abort`, `/nostr` work there
+   too; `/telegram status` shows state without touching the group.
+4. Creating a topic yourself works in reverse: the bot creates a new session
+   named after the topic, binds it, and asks for model + reasoning. Telegram
+   only delivers topic-creation notices to administrators, so keep the bot an
+   admin (step 3).
+5. Renaming the session (e.g. in the TUI) renames its bound topic to match.
+   A topic renamed by hand stays as typed until the session is renamed again.
+
+Prerequisites: group mode requires the **plugin-native** bot (it creates
+topics through the same in-process polling loop); `TELEGRAM_ALLOWED_USERS`
+must contain your user id. The standalone `dev:bot` process ignores topic
+mappings.
+
+Telegram allows only **one `getUpdates` consumer per bot token**. If several
+OpenCode servers run (e.g. the desktop app's server plus the background
+`opencode serve --service`), the first to start polls and the others run in
+**secondary mode** — no polling, but topic linking and sends still work from
+those processes — instead of fighting with `409 Conflict`.
+`TELEGRAM_LOCK_FILE` overrides the shared lock path when the plugin is
+installed in more than one place. Stopping one server is still recommended:
+each server resolves relative paths (`./data/...`) against its own working
+directory, so their mappings/state differ — set absolute paths in `.env`
+(or run one server) to keep them in sync.
 
 Quick start (standalone adapters via the Session API):
 

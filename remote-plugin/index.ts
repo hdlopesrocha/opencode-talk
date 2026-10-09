@@ -103,7 +103,9 @@ export default Plugin.define({
     const speak = (text: string): Promise<Uint8Array | null> => {
       const cfg = resolveConfig(undefined);
       const voice: VoiceLike = {
-        tts: cfg.tts,
+        // Remote talk is gated by botState.talk (/talk on, /telegram talk),
+        // not by local /sound (cfg.tts controls only local speakers).
+        tts: true,
         ttsAuto: cfg.ttsAuto,
         ttsVoice: cfg.ttsVoice,
         ttsVoiceEn: cfg.ttsVoiceEn,

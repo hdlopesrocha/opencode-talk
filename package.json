@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Two-way voice (STT/TTS) plus Telegram and Nostr remote control for OpenCode sessions.",
+  "description": "Two-way voice (STT/TTS) plus Telegram, XMPP and Nostr remote control for OpenCode sessions.",
   "exports": {
     ".": "./index.ts",
     "./tui": "./tui.ts",
@@ -46,6 +46,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "@xmpp/client": "^0.14.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "grammy": "^1.36.2",

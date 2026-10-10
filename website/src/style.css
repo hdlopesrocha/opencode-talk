@@ -1,0 +1,36 @@
+:root {
+  color-scheme: dark;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: #0a0c14;
+  color: #e8ecf5;
+  line-height: 1.6;
+}
+a { color: #7dd3fc; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #e2e8f0;
+}
+code { background: rgba(125, 211, 252, 0.1); padding: 0.1em 0.35em; border-radius: 6px; font-size: 0.88em; }
+pre code { background: none; padding: 0; }
+.btn {
+  display: inline-block;
+  border: 1px solid #2a3348;
+  background: #16203200;
+  background-color: #162032;
+  color: #e8ecf5;
+  border-radius: 10px;
+  padding: 0.65rem 1.2rem;
+  font-weight: 700;
+  font-size: 0.92rem;
+}
+.btn:hover { text-decoration: none; border-color: #38bdf8; }
+.btn-primary { background: #38bdf8; border-color: #38bdf8; color: #06121f; }
+.btn-primary:hover { background: #7dd3fc; }
+.btn-ghost { background: transparent; }
+#app { min-height: 100vh; }

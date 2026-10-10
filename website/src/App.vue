@@ -119,7 +119,13 @@ const commands = [
   <div class="page">
     <header class="nav">
       <a class="brand" :href="SITE">
-        <span class="brand-mark">◉</span>
+        <svg class="brand-mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true">
+          <rect width="64" height="64" rx="14" fill="#0a0c14"/>
+          <rect x="1.5" y="1.5" width="61" height="61" rx="12.5" fill="none" stroke="#1e2433" stroke-width="2"/>
+          <circle cx="21" cy="32" r="10.5" fill="none" stroke="#38bdf8" stroke-width="5.5"/>
+          <path d="M 31.28,19.74 A 16 16 0 0 1 31.28,44.26" fill="none" stroke="#a78bfa" stroke-width="4" stroke-linecap="round"/>
+          <path d="M 47,42 L 47,22 M 41,22 L 53,22" fill="none" stroke="#ffffff" stroke-width="4.5" stroke-linecap="round"/>
+        </svg>
         <span>opencode-talk</span>
       </a>
       <button class="nav-toggle" @click="menuOpen = !menuOpen" aria-label="Menu">☰</button>
@@ -350,7 +356,7 @@ cd opencode-talk &amp;&amp; npm install  <span class="dim"># sets up .venv: edge
   border-bottom: 1px solid #1e2433;
 }
 .brand { display: flex; gap: 0.5rem; align-items: center; font-weight: 800; font-size: 1.05rem; }
-.brand-mark { color: #7dd3fc; }
+.brand-mark { width: 26px; height: 26px; flex: none; }
 .nav-links { display: flex; gap: 1rem; align-items: center; }
 .nav-links a:not(.btn) { color: #b6bdd0; }
 .nav-links a:not(.btn):hover { color: #fff; }

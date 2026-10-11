@@ -629,3 +629,189 @@ describe("setupTelegramCommand group", () => {
     }
   });
 });
+
+describe("setupTelegramCommand sync", () => {
+  const GOOD = "8766321578:AAGwA-EeSDrcUaHScYw-nF2FvHuHRebHE1k";
+
+  function pinEnv(tokenFile: string): () => void {
+    const prevToken = process.env["TELEGRAM_BOT_TOKEN"];
+    const prevFile = process.env["TELEGRAM_TOKEN_FILE"];
+    process.env["TELEGRAM_BOT_TOKEN"] = "";
+    process.env["TELEGRAM_TOKEN_FILE"] = tokenFile;
+    return () => {
+      if (prevToken === undefined) delete process.env["TELEGRAM_BOT_TOKEN"];
+      else process.env["TELEGRAM_BOT_TOKEN"] = prevToken;
+      if (prevFile === undefined) delete process.env["TELEGRAM_TOKEN_FILE"];
+      else process.env["TELEGRAM_TOKEN_FILE"] = prevFile;
+    };
+  }
+
+  function getMeFetch() {
+    return (async () => ({
+      json: async () => ({
+        ok: true,
+        result: { id: 8766321578, is_bot: true, username: "opencode_talk_bot" },
+      }),
+    })) as unknown as typeof fetch;
+  }
+
+  it("reconnects with the saved token and group, verifying the topic", async () => {
+    const dir = tmpDir();
+    const file = join(dir, "telegram-token");
+    writeTokenFile(file, GOOD);
+    saveBotState(join(dir, "state.json"), { groupID: -1001234567890 });
+    const restore = pinEnv(file);
+    try {
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const { ctx, commands } = makeCtx();
+      const accounts: { token: string; groupID?: number }[] = [];
+      const links: { sessionID: string; opts?: { verify?: boolean } }[] = [];
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        tokenFile: file,
+        stateFile: join(dir, "state.json"),
+        fetchImpl: getMeFetch(),
+        onToken: async (token, groupID) => {
+          accounts.push({ token, groupID });
+        },
+        onLinkSession: async (sessionID, opts) => {
+          links.push({ sessionID, opts });
+          return `topic linked to ${sessionID}`;
+        },
+      });
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({ sessionID: "ses_1", prompt: { text: "/telegram sync" } });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+      expect(accounts).toEqual([{ token: GOOD, groupID: -1001234567890 }]);
+      expect(links).toEqual([{ sessionID: "ses_1", opts: { verify: true } }]);
+      const out = logs.join("\n");
+      expect(out).toContain("reconnected as @opencode_talk_bot");
+      expect(out).not.toContain(GOOD);
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("connects bot-only when no group is registered", async () => {
+    const dir = tmpDir();
+    const file = join(dir, "telegram-token");
+    writeTokenFile(file, GOOD);
+    const restore = pinEnv(file);
+    try {
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const { ctx, commands } = makeCtx();
+      const accounts: { token: string; groupID?: number }[] = [];
+      const links: string[] = [];
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        tokenFile: file,
+        stateFile: join(dir, "state.json"),
+        fetchImpl: getMeFetch(),
+        onToken: async (token, groupID) => {
+          accounts.push({ token, groupID });
+        },
+        onLinkSession: async (sessionID) => {
+          links.push(sessionID);
+          return `topic linked to ${sessionID}`;
+        },
+      });
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({ sessionID: "ses_1", prompt: { text: "/telegram sync" } });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+      expect(accounts).toEqual([{ token: GOOD, groupID: undefined }]);
+      expect(links).toEqual([]);
+      expect(logs.join("\n")).toContain("no group registered");
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports when no token was ever saved", async () => {
+    const dir = tmpDir();
+    const file = join(dir, "telegram-token");
+    const restore = pinEnv(file);
+    try {
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const { ctx, commands } = makeCtx();
+      let calls = 0;
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        tokenFile: file,
+        stateFile: join(dir, "state.json"),
+        fetchImpl: (async () => {
+          calls += 1;
+          throw new Error("must not verify without a token");
+        }) as unknown as typeof fetch,
+        onToken: async () => {},
+      });
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({ sessionID: "ses_1", prompt: { text: "/telegram sync" } });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+      expect(logs.join("\n")).toContain("no token saved");
+      expect(calls).toBe(0);
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects extra args with usage", async () => {
+    const dir = tmpDir();
+    const file = join(dir, "telegram-token");
+    writeTokenFile(file, GOOD);
+    const restore = pinEnv(file);
+    try {
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const { ctx, commands } = makeCtx();
+      let calls = 0;
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        tokenFile: file,
+        stateFile: join(dir, "state.json"),
+        fetchImpl: (async () => {
+          calls += 1;
+          throw new Error("must not verify on usage error");
+        }) as unknown as typeof fetch,
+        onToken: async () => {},
+      });
+      const logs: string[] = [];
+      const spy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({ sessionID: "ses_1", prompt: { text: "/telegram sync now" } });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+      expect(logs.join("\n")).toMatch(/usage/i);
+      expect(calls).toBe(0);
+    } finally {
+      restore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

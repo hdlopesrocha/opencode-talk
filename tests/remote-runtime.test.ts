@@ -65,6 +65,13 @@ function cfgFor(dir: string): AppConfig {
     SESSION_MAPPING_FILE: join(dir, "mapping.json"),
     TELEGRAM_STATE_FILE: join(dir, "state.json"),
     NOSTR_RELAYS: "",
+    // Never open real XMPP connections from unit tests: the repo data dir
+    // may hold live account credentials.
+    XMPP_JID: "",
+    XMPP_ACCOUNT_FILE: join(dir, "no-xmpp-account"),
+    XMPP_STATE_FILE: join(dir, "xmpp-state.json"),
+    XMPP_MAPPING_FILE: join(dir, "xmpp-mapping.json"),
+    XMPP_PROJECTS_FILE: join(dir, "xmpp-projects.json"),
   } as NodeJS.ProcessEnv;
   return loadConfig(env);
 }

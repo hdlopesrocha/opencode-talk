@@ -194,8 +194,8 @@ export class RemoteRuntime {
   }
 
   /** Create/reuse a session's topic in the registered group. Undefined when no bot runs. */
-  telegramLinkSession(sessionID: string): Promise<string | undefined> {
-    return this.telegram ? this.telegram.linkSession(sessionID) : Promise.resolve(undefined);
+  telegramLinkSession(sessionID: string, opts?: { verify?: boolean }): Promise<string | undefined> {
+    return this.telegram ? this.telegram.linkSession(sessionID, opts) : Promise.resolve(undefined);
   }
 
   // --- XMPP (driven by every location's `/xmpp` command) ------------------
@@ -339,17 +339,20 @@ export class RemoteRuntime {
     if (!location) return;
     this.stopXmppInternal();
     const effectiveRoom = mucRoom ?? loadXmppState(this.cfg.xmppStateFile).mucRoom ?? this.cfg.xmppRoom;
+    // Forward the runtime's resolved credentials explicitly: the bot setup
+    // must not re-resolve them from process env (which would bypass pinned
+    // test config — and hang on real connection attempts).
     const overrides: PluginXmppBotOverrides = {
       mapping: this.xmppMapping,
       keys: this.keys,
       peers: this.peers,
       chatProjects: this.xmppProjects,
+      jid: jid ?? this.cfg.xmppJid,
+      password: password ?? this.cfg.xmppPassword,
       talkEnabled: () => loadXmppState(this.cfg.xmppStateFile).talk,
       nostrWelcome: (sessionID, peerHex) => this.nostrWelcome(sessionID, peerHex),
       ...(effectiveRoom !== undefined ? { mucRoom: effectiveRoom } : {}),
     };
-    if (jid) overrides.jid = jid;
-    if (password) overrides.password = password;
     if (this.speak) overrides.speak = this.speak;
     this.xmpp = await this.deps.setupXmppBot(location.ctx, overrides);
   }

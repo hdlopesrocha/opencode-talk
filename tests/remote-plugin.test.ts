@@ -6,11 +6,14 @@ import { TelegramBridge } from "../remote-plugin/rpc.js";
 import { RemoteRuntime } from "../src/remote/pluginRuntime.js";
 
 // Full-plugin setup reads live config: pin it to inert values so tests never
-// open real relay/Telegram connections (dotenv never overrides existing env).
+// open real relay/Telegram/XMPP connections (dotenv never overrides existing env).
 process.env["TELEGRAM_BOT_TOKEN"] = "";
 process.env["TELEGRAM_TOKEN_FILE"] = join(tmpdir(), "oc-test-no-telegram-token");
 process.env["TELEGRAM_STATE_FILE"] = join(tmpdir(), "oc-test-no-telegram-state.json");
 process.env["NOSTR_RELAYS"] = "";
+process.env["XMPP_JID"] = "";
+process.env["XMPP_ACCOUNT_FILE"] = join(tmpdir(), "oc-test-no-xmpp-account");
+process.env["XMPP_STATE_FILE"] = join(tmpdir(), "oc-test-no-xmpp-state.json");
 
 function makeCtx() {
   const calls: Record<string, unknown[]> = { prompt: [], interrupt: [], get: [] };

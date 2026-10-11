@@ -35,14 +35,15 @@ function repoRoot(): string {
 
 /**
  * Default lock file for a token. Lives in the repo's `data/` directory, NOT
- * next to the cwd-relative state files: OpenCode servers for different
+ * next to per-process working directories: OpenCode servers for different
  * projects run the same plugin from the same install but with different
- * working directories, and they must agree on one lock. `TELEGRAM_LOCK_FILE`
- * overrides it (absolute, or relative to cwd).
+ * working directories, and they must agree on one lock (state/mapping files
+ * in config.ts are anchored the same way). `TELEGRAM_LOCK_FILE` overrides it
+ * (absolute, or relative to the install root).
  */
 export function defaultPollLockFile(token: string, configured = ""): string {
   const override = configured.trim();
-  if (override) return isAbsolute(override) ? override : resolve(override);
+  if (override) return isAbsolute(override) ? override : resolve(repoRoot(), override);
   return join(repoRoot(), "data", `telegram-bot-${tokenLockHash(token)}.lock`);
 }
 

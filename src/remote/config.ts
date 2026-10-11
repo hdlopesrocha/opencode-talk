@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { config as dotenvConfig } from "dotenv";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizePeer } from "./nostr/keys.js";
 import { readTokenFile } from "./telegram/tokenFile.js";
@@ -27,6 +28,30 @@ function intEnv(name: string, fallback: number): number {
   const raw = (process.env[name] ?? "").trim();
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/** Install root: walk up from this module until package.json; falls back to cwd. */
+function repoRoot(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 6; i += 1) {
+    if (existsSync(join(dir, "package.json"))) return dir;
+    dir = dirname(dir);
+  }
+  return process.cwd();
+}
+
+/**
+ * Data files (mappings, token/account files, bot state, media) must be shared
+ * by every OpenCode server using this install, but servers run with different
+ * working directories (project dirs, $HOME for the desktop background
+ * service). Resolve cwd-relative paths against the install root so the
+ * Telegram poller and the TUI server read/write the same files instead of
+ * silently diverging per cwd — divergence surfaces as "No session selected"
+ * for freshly linked topics. Absolute paths keep working as before.
+ */
+function dataPath(value: string | undefined, fallback: string): string {
+  const raw = (value ?? fallback).trim() || fallback;
+  return isAbsolute(raw) ? raw : resolve(repoRoot(), raw);
 }
 
 export interface AppConfig {
@@ -88,24 +113,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const opencodeToken = (env["OPENCODE_TOKEN"] ?? "").trim();
   const opencodeDirectory = (env["OPENCODE_DIRECTORY"] ?? process.cwd()).trim() || process.cwd();
   const opencodeDefaultAgent = (env["OPENCODE_DEFAULT_AGENT"] ?? "build").trim() || "build";
-  const telegramBotToken = resolveTelegramToken(env);
-  const telegramTokenFile =
-    (env["TELEGRAM_TOKEN_FILE"] ?? "./data/telegram-token").trim() || "./data/telegram-token";
-  const telegramStateFile =
-    (env["TELEGRAM_STATE_FILE"] ?? "./data/telegram-state.json").trim() || "./data/telegram-state.json";
-  const telegramLockFile = (env["TELEGRAM_LOCK_FILE"] ?? "").trim();
+  const telegramTokenFile = dataPath(env["TELEGRAM_TOKEN_FILE"], "./data/telegram-token");
+  const telegramBotToken = resolveTelegramToken(env, telegramTokenFile);
+  const telegramStateFile = dataPath(env["TELEGRAM_STATE_FILE"], "./data/telegram-state.json");
+  const lockRaw = (env["TELEGRAM_LOCK_FILE"] ?? "").trim();
+  const telegramLockFile = lockRaw ? dataPath(lockRaw, lockRaw) : "";
   const telegramAllowedUsers = parseAllowedUsers(env["TELEGRAM_ALLOWED_USERS"] ?? "");
   const telegramProjects = (env["TELEGRAM_PROJECTS"] ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  const sessionMappingFile =
-    (env["SESSION_MAPPING_FILE"] ?? "./data/session-mapping.json").trim() || "./data/session-mapping.json";
-  const telegramChatProjectsFile =
-    (env["TELEGRAM_PROJECTS_FILE"] ?? "./data/telegram-projects.json").trim() || "./data/telegram-projects.json";
-  const nostrProjectsFile =
-    (env["NOSTR_PROJECTS_FILE"] ?? "./data/nostr-projects.json").trim() || "./data/nostr-projects.json";
-  const mediaDir = (env["MEDIA_DIR"] ?? "./data/media").trim() || "./data/media";
+  const sessionMappingFile = dataPath(env["SESSION_MAPPING_FILE"], "./data/session-mapping.json");
+  const telegramChatProjectsFile = dataPath(env["TELEGRAM_PROJECTS_FILE"], "./data/telegram-projects.json");
+  const nostrProjectsFile = dataPath(env["NOSTR_PROJECTS_FILE"], "./data/nostr-projects.json");
+  const mediaDir = dataPath(env["MEDIA_DIR"], "./data/media");
   const mediaMaxMb = intEnv("MEDIA_MAX_MB", 5);
   const nostrRelays = (env["NOSTR_RELAYS"] ?? "")
     .split(",")
@@ -117,28 +138,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (hex) nostrAllowedNpubs.add(hex);
     else if (part.trim()) console.warn(`[config] ignoring invalid NOSTR_ALLOWED_NPUBS entry: ${part.trim()}`);
   }
-  const nostrKeysFile =
-    (env["NOSTR_KEYS_FILE"] ?? "./data/nostr-keys.json").trim() || "./data/nostr-keys.json";
-  const nostrPeersFile =
-    (env["NOSTR_PEERS_FILE"] ?? "./data/nostr-peers.json").trim() || "./data/nostr-peers.json";
-  const nostrSeenFile =
-    (env["NOSTR_SEEN_FILE"] ?? "./data/nostr-seen.json").trim() || "./data/nostr-seen.json";
+  const nostrKeysFile = dataPath(env["NOSTR_KEYS_FILE"], "./data/nostr-keys.json");
+  const nostrPeersFile = dataPath(env["NOSTR_PEERS_FILE"], "./data/nostr-peers.json");
+  const nostrSeenFile = dataPath(env["NOSTR_SEEN_FILE"], "./data/nostr-seen.json");
   const nostrBlossomServer = (env["NOSTR_BLOSSOM_SERVER"] ?? "").trim();
-  const xmppAccount = resolveXmppAccount(env);
-  const xmppAccountFile =
-    (env["XMPP_ACCOUNT_FILE"] ?? "./data/xmpp-account").trim() || "./data/xmpp-account";
-  const xmppStateFile =
-    (env["XMPP_STATE_FILE"] ?? "./data/xmpp-state.json").trim() || "./data/xmpp-state.json";
+  const xmppAccountFile = dataPath(env["XMPP_ACCOUNT_FILE"], "./data/xmpp-account");
+  const xmppAccount = resolveXmppAccount(env, xmppAccountFile);
+  const xmppStateFile = dataPath(env["XMPP_STATE_FILE"], "./data/xmpp-state.json");
   const xmppAllowedUsers = parseAllowedJids(env["XMPP_ALLOWED_USERS"] ?? "");
   const xmppProjectsRaw = (env["XMPP_PROJECTS"] ?? "").trim();
   const xmppProjects = (xmppProjectsRaw || (env["TELEGRAM_PROJECTS"] ?? ""))
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  const xmppMappingFile =
-    (env["XMPP_MAPPING_FILE"] ?? "./data/xmpp-mapping.json").trim() || "./data/xmpp-mapping.json";
-  const xmppChatProjectsFile =
-    (env["XMPP_PROJECTS_FILE"] ?? "./data/xmpp-projects.json").trim() || "./data/xmpp-projects.json";
+  const xmppMappingFile = dataPath(env["XMPP_MAPPING_FILE"], "./data/xmpp-mapping.json");
+  const xmppChatProjectsFile = dataPath(env["XMPP_PROJECTS_FILE"], "./data/xmpp-projects.json");
   const xmppRoom = (env["XMPP_MUC"] ?? "").trim() || undefined;
   const logLevel = (env["LOG_LEVEL"] ?? "info").trim() || "info";
   return {
@@ -188,11 +202,10 @@ export function assertApiTokenConfigured(cfg: AppConfig): void {
   }
 }
 
-/** Env TELEGRAM_BOT_TOKEN wins; otherwise the /telegram-token file (if valid). */
-function resolveTelegramToken(env: NodeJS.ProcessEnv): string {
+/** Env TELEGRAM_BOT_TOKEN wins; otherwise the token file (install-anchored, if valid). */
+function resolveTelegramToken(env: NodeJS.ProcessEnv, file: string): string {
   const fromEnv = (env["TELEGRAM_BOT_TOKEN"] ?? "").trim();
   if (fromEnv) return fromEnv;
-  const file = (env["TELEGRAM_TOKEN_FILE"] ?? "./data/telegram-token").trim() || "./data/telegram-token";
   return readTokenFile(file);
 }
 
@@ -207,11 +220,10 @@ function parseAllowedJids(raw: string): Set<string> {
 }
 
 /** Env XMPP_JID + XMPP_PASSWORD (XMPP_BOT_TOKEN alias) wins; otherwise the account file. */
-function resolveXmppAccount(env: NodeJS.ProcessEnv): { jid: string; password: string } {
+function resolveXmppAccount(env: NodeJS.ProcessEnv, file: string): { jid: string; password: string } {
   const jidFromEnv = (env["XMPP_JID"] ?? "").trim();
   const passwordFromEnv = (env["XMPP_PASSWORD"] ?? env["XMPP_BOT_TOKEN"] ?? "").trim();
   if (jidFromEnv && passwordFromEnv) return { jid: normalizeJid(jidFromEnv), password: passwordFromEnv };
-  const file = (env["XMPP_ACCOUNT_FILE"] ?? "./data/xmpp-account").trim() || "./data/xmpp-account";
   const stored = readAccountFile(file);
   const jid = jidFromEnv ? normalizeJid(jidFromEnv) : stored.jid ? normalizeJid(stored.jid) : "";
   const password = passwordFromEnv || stored.password;

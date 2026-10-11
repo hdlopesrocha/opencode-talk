@@ -578,10 +578,12 @@ OpenCode servers run (e.g. the desktop app's server plus the background
 **secondary mode** — no polling, but topic linking and sends still work from
 those processes — instead of fighting with `409 Conflict`.
 `TELEGRAM_LOCK_FILE` overrides the shared lock path when the plugin is
-installed in more than one place. Stopping one server is still recommended:
-each server resolves relative paths (`./data/...`) against its own working
-directory, so their mappings/state differ — set absolute paths in `.env`
-(or run one server) to keep them in sync.
+installed in more than one place. Mappings, token/account files, bot state
+and media resolve against the install directory (not each server's working
+directory), so every server shares them — absolute `*_FILE` paths in `.env`
+still win when set. Stopping extra servers is still recommended: with several
+servers only one polls, and linked topics reply from whichever holds the
+poller.
 
 Quick start (standalone adapters via the Session API):
 

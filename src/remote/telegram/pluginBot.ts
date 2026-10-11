@@ -198,7 +198,13 @@ export class TelegramBotApi {
   }
 
   async editMessage(chatId: number | string, messageId: number, text: string): Promise<void> {
-    await this.call("editMessageText", { chat_id: chatId, message_id: messageId, text: truncate(text) });
+    try {
+      await this.call("editMessageText", { chat_id: chatId, message_id: messageId, text: truncate(text) });
+    } catch (err) {
+      // Editing to identical content is a no-op success for progress/final
+      // updates; anything else still throws so callers can recover.
+      if (!/message is not modified/i.test(err instanceof Error ? err.message : String(err))) throw err;
+    }
   }
 
   /** Edit a menu message (keyboard attached). Swallows no-op edits. */
@@ -289,6 +295,8 @@ interface LiveState {
   placeholderPending?: boolean;
   textBuffer: string;
   lastEdit: number;
+  /** Last progress text shown: identical updates skip the edit entirely. */
+  lastText: string;
   completed: boolean;
 }
 
@@ -1707,7 +1715,7 @@ export class PluginTelegramBot {
   private ensureLive(chatKey: string, sessionID: string): LiveState {
     let st = this.live.get(chatKey);
     if (!st || st.sessionID !== sessionID || st.completed) {
-      st = { sessionID, textBuffer: "", lastEdit: 0, completed: false };
+      st = { sessionID, textBuffer: "", lastEdit: 0, lastText: "", completed: false };
       this.live.set(chatKey, st);
     }
     return st;
@@ -1724,6 +1732,7 @@ export class PluginTelegramBot {
       const target = this.targetOfKey(chatKey);
       st.placeholderId = await target.sendRaw(text);
       st.lastEdit = Date.now();
+      st.lastText = text;
     } catch (err) {
       st.placeholderPending = false;
       log.warn("Could not send placeholder", { error: String(err) });
@@ -1733,17 +1742,21 @@ export class PluginTelegramBot {
   private async upsertProgress(chatKey: string, text: string): Promise<void> {
     const st = this.live.get(chatKey);
     if (!st) return;
+    // Identical updates would make Telegram reject the edit ("message is not
+    // modified") — and the retry would then spam a duplicate message. Skip.
+    if (text === st.lastText) return;
     if (Date.now() - st.lastEdit < 2000) return;
     const { chatId, threadId } = parseChatKey(chatKey);
     try {
       if (st.placeholderId) {
         await this.api.editMessage(chatId, st.placeholderId, truncate(text));
-        st.lastEdit = Date.now();
       } else {
         st.placeholderId = await this.api.sendRaw(chatId, text, undefined, threadId);
-        st.lastEdit = Date.now();
       }
-    } catch {
+      st.lastText = text;
+      st.lastEdit = Date.now();
+    } catch (err) {
+      log.warn("Progress edit failed", { error: String(err), chatKey });
       st.placeholderId = undefined;
     }
   }

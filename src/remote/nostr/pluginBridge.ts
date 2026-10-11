@@ -5,6 +5,7 @@ import type { ModelRef, SessionEvent, SessionSummary } from "../types.js";
 import { NostrAdapter, type NostrApiPort } from "./adapter.js";
 import { SessionKeyStore, hexToNpub, normalizePeer } from "./keys.js";
 import { PeerStore } from "./peers.js";
+import { SeenStore } from "./seen.js";
 import { SimplePoolTransport, type RelayTransport } from "./transport.js";
 import { ChatProjectStore } from "../chatProjects.js";
 import { claimRunSlot, releaseRunSlot } from "../runSlot.js";
@@ -17,6 +18,7 @@ export interface PluginNostrOverrides {
   allowedPeers?: Set<string>;
   keysFile?: string;
   peersFile?: string;
+  seenFile?: string;
   chatProjectsFile?: string;
   stateFile?: string;
   blossomServer?: string;
@@ -24,6 +26,7 @@ export interface PluginNostrOverrides {
   transport?: RelayTransport;
   keys?: SessionKeyStore;
   peers?: PeerStore;
+  seen?: SeenStore;
   chatProjects?: ChatProjectStore;
 }
 
@@ -196,6 +199,7 @@ export function createNostrControl(ctx: any, overrides: PluginNostrOverrides = {
   const relays = overrides.relays ?? cfg.nostrRelays;
   const keys = overrides.keys ?? new SessionKeyStore(overrides.keysFile ?? cfg.nostrKeysFile);
   const peers = overrides.peers ?? new PeerStore(overrides.peersFile ?? cfg.nostrPeersFile);
+  const seen = overrides.seen ?? new SeenStore(overrides.seenFile ?? cfg.nostrSeenFile);
   const chatProjects =
     overrides.chatProjects ?? new ChatProjectStore(overrides.chatProjectsFile ?? cfg.nostrProjectsFile);
   const allowedPeers = overrides.allowedPeers ?? cfg.nostrAllowedNpubs;
@@ -239,6 +243,7 @@ export function createNostrControl(ctx: any, overrides: PluginNostrOverrides = {
       transport,
       keys,
       peers,
+      seen,
       allowedPeers,
       blossomServer,
       projects: overrides.projects ?? cfg.telegramProjects,
@@ -371,10 +376,11 @@ export async function setupPluginNostr(ctx: any, overrides: PluginNostrOverrides
   const cfg = loadConfig();
   const keys = overrides.keys ?? new SessionKeyStore(overrides.keysFile ?? cfg.nostrKeysFile);
   const peers = overrides.peers ?? new PeerStore(overrides.peersFile ?? cfg.nostrPeersFile);
+  const seen = overrides.seen ?? new SeenStore(overrides.seenFile ?? cfg.nostrSeenFile);
   const chatProjects =
     overrides.chatProjects ?? new ChatProjectStore(overrides.chatProjectsFile ?? cfg.nostrProjectsFile);
   const stateFile = overrides.stateFile ?? cfg.telegramStateFile;
-  const control = createNostrControl(ctx, { ...overrides, keys, peers, chatProjects });
+  const control = createNostrControl(ctx, { ...overrides, keys, peers, seen, chatProjects });
 
   if (loadBotState(stateFile).nostrStopped) {
     log.info("Nostr bridge stopped (/nostr on to resume).");

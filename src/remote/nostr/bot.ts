@@ -5,6 +5,7 @@ import { ChatProjectStore } from "../chatProjects.js";
 import { NostrAdapter } from "./adapter.js";
 import { SessionKeyStore } from "./keys.js";
 import { PeerStore } from "./peers.js";
+import { SeenStore } from "./seen.js";
 import { SimplePoolTransport } from "./transport.js";
 
 const log = createLogger("nostr-bot");
@@ -26,6 +27,7 @@ export async function main(): Promise<void> {
   const api = new SessionApiClient({ baseUrl: cfg.apiBaseUrl, token: cfg.apiToken });
   const keys = new SessionKeyStore(cfg.nostrKeysFile);
   const peers = new PeerStore(cfg.nostrPeersFile);
+  const seen = new SeenStore(cfg.nostrSeenFile);
   const transport = new SimplePoolTransport();
   const adapter = new NostrAdapter({
     api,
@@ -33,6 +35,7 @@ export async function main(): Promise<void> {
     transport,
     keys,
     peers,
+    seen,
     allowedPeers: cfg.nostrAllowedNpubs,
     blossomServer: cfg.nostrBlossomServer,
     projects: cfg.telegramProjects,

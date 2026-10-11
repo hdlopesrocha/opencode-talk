@@ -10,6 +10,7 @@ import { ChatProjectStore } from "../src/remote/chatProjects.js";
 import { createDM, parseDM, splitDM } from "../src/remote/nostr/dm.js";
 import { SessionKeyStore, hexToNpub, isHexPubkey, normalizePeer, npubToHex } from "../src/remote/nostr/keys.js";
 import { PeerStore } from "../src/remote/nostr/peers.js";
+import { SeenStore } from "../src/remote/nostr/seen.js";
 import type { RelayTransport } from "../src/remote/nostr/transport.js";
 import type { SessionEvent, SessionSummary } from "../src/remote/types.js";
 
@@ -109,7 +110,7 @@ function makeApi(state: FakeApiState): NostrApiPort {
 function makeAdapter(
   dir: string,
   state: FakeApiState,
-  opts: { allowed?: string[]; blossom?: string; events?: SessionEvent[]; projects?: string[] } = {},
+  opts: { allowed?: string[]; blossom?: string; events?: SessionEvent[]; projects?: string[]; seen?: SeenStore } = {},
 ) {
   const transport = new FakeTransport();
   const keys = new SessionKeyStore(join(dir, "keys.json"));
@@ -125,6 +126,7 @@ function makeAdapter(
     blossomServer: opts.blossom,
     projects: opts.projects,
     chatProjects,
+    seen: opts.seen,
     subscribeApiEvents: async function* () {
       for (const ev of opts.events ?? []) yield ev;
     },
@@ -729,6 +731,51 @@ describe("NostrAdapter dedupe", () => {
       expect(nip04.decrypt(peerSecret, transport.published[0]!.event.pubkey, transport.published[0]!.event.content)).toContain(
         "step failed",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persisted dedupe skips relay replays after a restart", async () => {
+    const dir = tmpDir();
+    try {
+      const peerSecret = generateSecretKey();
+      const peerHex = getPublicKey(peerSecret);
+      const state: FakeApiState = {
+        sessions: [summary("ses_1")],
+        sent: [],
+        aborted: [],
+        createdOpts: [],
+        switched: [],
+        media: new Map(),
+      };
+      const seenFile = join(dir, "seen.json");
+      const first = makeAdapter(dir, state, { allowed: [peerHex], seen: new SeenStore(seenFile) });
+      first.keys.getOrCreate("ses_1");
+      first.peers.set("ses_1", peerHex);
+      first.adapter.ensureSession("ses_1");
+      const dm = dmFromPeer(first.keys, "ses_1", peerSecret, "Hello");
+      first.transport.emit(dm);
+      await tick();
+      const forwarded = state.sent.length;
+      expect(forwarded).toBeGreaterThan(0);
+
+      // Restart: a fresh adapter sharing the persisted file. The relay replays
+      // the stored DM — it must be skipped, not prompted again.
+      const second = makeAdapter(dir, state, { allowed: [peerHex], seen: new SeenStore(seenFile) });
+      second.keys.getOrCreate("ses_1");
+      second.peers.set("ses_1", peerHex);
+      second.adapter.ensureSession("ses_1");
+      expect(second.transport.subs[0]?.filter.since).toBe(dm.created_at - 60);
+      second.transport.emit(dm);
+      await tick();
+      expect(state.sent).toHaveLength(forwarded);
+
+      // A genuinely new DM still reaches the session.
+      const next = dmFromPeer(second.keys, "ses_1", peerSecret, "Hello again");
+      second.transport.emit(next);
+      await tick();
+      expect(state.sent).toHaveLength(forwarded + 1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

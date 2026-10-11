@@ -66,6 +66,7 @@ export interface AppConfig {
   nostrAllowedNpubs: Set<string>;
   nostrKeysFile: string;
   nostrPeersFile: string;
+  nostrSeenFile: string;
   nostrBlossomServer: string;
   logLevel: string;
 }
@@ -120,6 +121,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     (env["NOSTR_KEYS_FILE"] ?? "./data/nostr-keys.json").trim() || "./data/nostr-keys.json";
   const nostrPeersFile =
     (env["NOSTR_PEERS_FILE"] ?? "./data/nostr-peers.json").trim() || "./data/nostr-peers.json";
+  const nostrSeenFile =
+    (env["NOSTR_SEEN_FILE"] ?? "./data/nostr-seen.json").trim() || "./data/nostr-seen.json";
   const nostrBlossomServer = (env["NOSTR_BLOSSOM_SERVER"] ?? "").trim();
   const xmppAccount = resolveXmppAccount(env);
   const xmppAccountFile =
@@ -162,6 +165,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nostrAllowedNpubs,
     nostrKeysFile,
     nostrPeersFile,
+    nostrSeenFile,
     nostrBlossomServer,
     xmppJid: xmppAccount.jid,
     xmppPassword: xmppAccount.password,

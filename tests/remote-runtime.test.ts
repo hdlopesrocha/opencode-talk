@@ -54,6 +54,7 @@ function cfgFor(dir: string): AppConfig {
     ...process.env,
     NOSTR_KEYS_FILE: join(dir, "keys.json"),
     NOSTR_PEERS_FILE: join(dir, "peers.json"),
+    NOSTR_SEEN_FILE: join(dir, "seen.json"),
     NOSTR_PROJECTS_FILE: join(dir, "nostr-projects.json"),
     TELEGRAM_PROJECTS_FILE: join(dir, "tg-projects.json"),
     SESSION_MAPPING_FILE: join(dir, "mapping.json"),

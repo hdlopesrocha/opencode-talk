@@ -230,6 +230,7 @@ describe("setupPluginNostr /nostr command", () => {
         transport,
         keys,
         peers,
+        seenFile: join(dir, "seen.json"),
       });
       cleanupGlobals.push(stop);
       const cmd = commands.find((c) => c.name === "nostr");
@@ -271,6 +272,7 @@ describe("setupPluginNostr /nostr command", () => {
         transport,
         keys,
         peers,
+        seenFile: join(dir, "seen.json"),
       });
       const cmd = commands.find((c) => c.name === "nostr")!;
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -304,7 +306,7 @@ describe("setupPluginNostr /nostr command", () => {
       const keys = new SessionKeyStore(join(dir, "keys.json"));
       const peers = new PeerStore(join(dir, "peers.json"));
       const { ctx, commands } = makePluginCtx();
-      const stop = await setupPluginNostr(ctx, { relays: [], keys, peers });
+      const stop = await setupPluginNostr(ctx, { relays: [], keys, peers, seenFile: join(dir, "seen.json") });
       const cmd = commands.find((c) => c.name === "nostr");
       expect(cmd).toBeDefined();
       const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -326,7 +328,7 @@ describe("setupPluginNostr /nostr command", () => {
       const keys = new SessionKeyStore(join(dir, "keys.json"));
       const peers = new PeerStore(join(dir, "peers.json"));
       const { ctx, commands } = makePluginCtx();
-      const stop = await setupPluginNostr(ctx, { relays: [], keys, peers });
+      const stop = await setupPluginNostr(ctx, { relays: [], keys, peers, seenFile: join(dir, "seen.json") });
       const cmd = commands.find((c) => c.name === "nostr")!;
       const logs: string[] = [];
       const logSpy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));
@@ -356,7 +358,7 @@ describe("setupPluginNostr /nostr command", () => {
       const peers = new PeerStore(join(dir, "peers.json"));
       const stateFile = join(dir, "state.json");
       const { ctx, commands } = makePluginCtx();
-      const stop = await setupPluginNostr(ctx, { relays: [], keys, peers, stateFile });
+      const stop = await setupPluginNostr(ctx, { relays: [], keys, peers, stateFile, seenFile: join(dir, "seen.json") });
       const cmd = commands.find((c) => c.name === "nostr")!;
       const logs: string[] = [];
       const logSpy = vi.spyOn(console, "log").mockImplementation((m: unknown) => logs.push(String(m)));

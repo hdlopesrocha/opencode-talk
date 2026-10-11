@@ -8,8 +8,9 @@ import { uploadToBlossom } from "./blossom.js";
 import { DM_KIND, createDM, parseDM, splitDM } from "./dm.js";
 import type { SessionKeyStore, SessionIdentity } from "./keys.js";
 import type { PeerStore } from "./peers.js";
+import type { SeenStore } from "./seen.js";
 import type { RelayTransport, SubHandle } from "./transport.js";
-import type { Event as NostrEvent } from "nostr-tools";
+import type { Event as NostrEvent, Filter } from "nostr-tools";
 
 const log = createLogger("nostr-adapter");
 
@@ -40,6 +41,8 @@ export interface NostrAdapterOptions {
   projects?: string[];
   /** Per-peer project selection backing /project (absent = selection unavailable). */
   chatProjects?: ChatProjectStore;
+  /** Durable processed-event dedupe (absent = in-memory only, e.g. tests). */
+  seen?: SeenStore;
   fetchImpl?: typeof fetch;
   /** Session API event stream factory (injectable for tests). */
   subscribeApiEvents: (signal: AbortSignal) => AsyncIterable<SessionEvent>;
@@ -93,6 +96,7 @@ export class NostrAdapter {
   private pendingModel = new Map<string, string>();
   private subs = new Map<string, SubHandle>();
   private seenEventIds = new Set<string>();
+  private seen: SeenStore | undefined;
   private buffers = new Map<string, OutgoingBuffer>();
   private errorNotified = new Set<string>();
   private rescanTimer: ReturnType<typeof setInterval> | undefined;
@@ -109,15 +113,24 @@ export class NostrAdapter {
     this.subscribeApiEvents = opts.subscribeApiEvents;
     this.configuredProjects = [...(opts.projects ?? [])];
     this.chatProjects = opts.chatProjects;
+    this.seen = opts.seen;
   }
 
   /** Ensure a session has an identity + live DM subscription. Idempotent. */
   ensureSession(sessionID: string): SessionIdentity {
     const identity = this.keys.getOrCreate(sessionID);
     if (!this.subs.has(identity.pubkey)) {
+      const filter: Filter = { kinds: [DM_KIND], "#p": [identity.pubkey] };
+      // Relays re-send their stored backlog on every subscription; bound the
+      // replay with the newest already-processed event (minus clock slack).
+      const watermark = this.seen?.watermark(sessionID);
+      if (watermark !== undefined) {
+        const now = Math.floor(Date.now() / 1000);
+        filter.since = Math.max(0, Math.min(watermark, now) - 60);
+      }
       const sub = this.transport.subscribe(
         this.relays,
-        { kinds: [DM_KIND], "#p": [identity.pubkey] },
+        filter,
         (ev) => {
           void this.handleIncoming(sessionID, ev).catch((err) =>
             log.warn("Incoming DM failed", { error: String(err) }),
@@ -250,6 +263,9 @@ export class NostrAdapter {
     if (this.seenEventIds.has(seenKey)) return;
     this.seenEventIds.add(seenKey);
     if (this.seenEventIds.size > 5000) this.seenEventIds.clear();
+    // Durable dedupe: relay replays after a restart must not re-prompt the session.
+    if (this.seen?.has(sessionID, event.id)) return;
+    this.seen?.add(sessionID, event.id, event.created_at);
     const dm = parseDM(event, identity.secretKey, identity.pubkey);
     if (!dm) return;
     if (dm.fromHex === identity.pubkey) return; // own echo — never reply

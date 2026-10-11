@@ -1519,6 +1519,24 @@ export class PluginTelegramBot {
   }
 
   /**
+   * Drop a topic binding whose forum topic no longer exists in Telegram.
+   * A deleted topic fails every future send, so keeping the binding only
+   * produces a warning per event while the user sees nothing. Plain chats
+   * are never auto-forgotten. Returns true when the error was handled.
+   */
+  private forgetDeadThread(key: string, sessionID: string, err: unknown): boolean {
+    if (!isDeadThread(err)) return false;
+    if (parseChatKey(key).threadId === undefined) return false;
+    this.mapping.clear(key);
+    this.live.delete(key);
+    log.info(
+      `[telegram] topic ${key} no longer exists — unlinked from session ${sessionID} ` +
+        `(deleted in Telegram?). Run /telegram in that session to link a fresh topic.`,
+    );
+    return true;
+  }
+
+  /**
    * Mirror a locally submitted prompt (typed in OpenCode, not in Telegram)
    * into every chat bound to the session, so remote readers see both sides
    * of the conversation. Remote-originated prompts are filtered by the caller.
@@ -1529,7 +1547,9 @@ export class PluginTelegramBot {
       try {
         await target.sendRaw(`👤 ${text}`);
       } catch (err) {
-        log.warn("Prompt mirror failed", { error: String(err), session: sessionID, key });
+        if (!this.forgetDeadThread(key, sessionID, err)) {
+          log.warn("Prompt mirror failed", { error: String(err), session: sessionID, key });
+        }
       }
     }
   }
@@ -1539,6 +1559,16 @@ export class PluginTelegramBot {
     if (keys.length === 0) return;
     for (const key of keys) {
       const target = this.targetOfKey(key);
+      try {
+        await this.routeKey(key, target, ev);
+      } catch (err) {
+        if (!this.forgetDeadThread(key, ev.sessionID, err)) throw err;
+      }
+    }
+  }
+
+  /** Route one event to one bound chat; throws send failures to the caller. */
+  private async routeKey(key: string, target: ChatTarget, ev: SessionEvent): Promise<void> {
       switch (ev.type) {
         case "session.started":
           this.ensureLive(key, ev.sessionID);
@@ -1596,7 +1626,6 @@ export class PluginTelegramBot {
         default:
           break;
       }
-    }
   }
 
   /**
@@ -1615,7 +1644,9 @@ export class PluginTelegramBot {
       await this.api.editForumTopic(chatId, threadId, name);
       this.topicSessionTitles.set(key, name);
     } catch (err) {
-      log.warn("Topic rename failed", { error: String(err), session: sessionID, key });
+      if (!this.forgetDeadThread(key, sessionID, err)) {
+        log.warn("Topic rename failed", { error: String(err), session: sessionID, key });
+      }
     }
   }
 
@@ -1666,6 +1697,7 @@ export class PluginTelegramBot {
       try {
         await target.sendPhoto(bytes, filename, caption);
       } catch (err) {
+        if (this.forgetDeadThread(key, sessionID, err)) continue;
         log.warn("Photo send failed", { error: String(err) });
         await target.sendRaw(`📷 ${filename} (image unavailable)`);
       }
@@ -1840,6 +1872,11 @@ function stripMarkdown(text: string): string {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Telegram's error when a send targets a deleted forum topic. */
+function isDeadThread(err: unknown): boolean {
+  return /message thread not found/i.test(errMessage(err));
 }
 
 function sleep(ms: number): Promise<void> {

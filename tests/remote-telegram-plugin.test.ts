@@ -825,6 +825,66 @@ describe("PluginTelegramBot outgoing", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("treats message-is-not-modified edits as success", async () => {
+    const failing = (msg: string) =>
+      (async (url: string) => {
+        if (String(url).endsWith("/editMessageText")) throw new Error(msg);
+        return { json: async () => ({ ok: true, result: true }) } as unknown as Response;
+      }) as unknown as typeof fetch;
+    const api = new TelegramBotApi(
+      "test-token",
+      failing("Bad Request: message is not modified: specified new message content is exactly the same"),
+    );
+    await expect(api.editMessage(-100999, 5, "same")).resolves.toBeUndefined();
+    const api2 = new TelegramBotApi("test-token", failing("Bad Request: message to edit not found"));
+    await expect(api2.editMessage(-100999, 5, "gone")).rejects.toThrow(/not found/);
+  });
+
+  it("skips identical progress edits instead of spamming duplicates", async () => {
+    const dir = tmpDir();
+    try {
+      const sessionEvents = [
+        { type: "session.execution.started", data: { sessionID: "ses_1" } },
+        { type: "session.tool.called", data: { sessionID: "ses_1", tool: "read" } },
+        { type: "session.tool.called", data: { sessionID: "ses_1", tool: "read" } },
+      ];
+      const { fetchImpl, sent } = makeFetch([]);
+      const { ctx } = makeCtx([summary("ses_1")]);
+      // Space session events past the 2s edit throttle so the duplicate is
+      // skipped by content dedupe, not by timing.
+      ctx.event.subscribe = async function* () {
+        for (const e of sessionEvents) {
+          await new Promise((r) => setTimeout(r, 2100));
+          yield e;
+        }
+        await new Promise(() => {});
+      };
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set(111, "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(7000);
+      abort.abort();
+      bot.stop();
+      // One placeholder send + one edit to "🤖 read..."; the repeated
+      // identical update must not produce a second edit (which Telegram
+      // would reject, cascading into duplicate messages).
+      expect(sent.filter((c) => c.method === "sendMessage")).toHaveLength(1);
+      expect(sent.filter((c) => c.method === "editMessageText")).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20000);
 });
 
 describe("PluginTelegramBot unknown commands", () => {

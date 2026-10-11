@@ -1,5 +1,7 @@
 import type { VoiceConfig } from "./config.js"
 import { node, platform } from "./node.js"
+import { detectLanguage, type DetectedLanguage } from "./lang.js"
+export { detectLanguage, type DetectedLanguage }
 
 /**
  * Text-to-speech for the agent's messages.
@@ -100,61 +102,6 @@ async function withPlaybackLock<T>(fn: () => Promise<T>): Promise<T> {
       // ignore
     }
   }
-}
-
-const EN_WORDS = new Set([
-  "the", "and", "you", "your", "yours", "this", "that", "these", "those", "with", "without",
-  "for", "from", "are", "is", "was", "were", "be", "been", "have", "has", "had", "will",
-  "would", "can", "could", "should", "may", "might", "must", "not", "but", "they", "them",
-  "there", "here", "what", "when", "where", "which", "who", "how", "why", "please", "thanks",
-  "thank", "hello", "hi", "yes", "no", "ok", "okay", "done", "error", "warning", "file",
-  "files", "code", "test", "tests", "build", "run", "running", "install", "update", "note",
-  "let", "use", "using", "add", "added", "need", "want", "see", "now", "then", "also",
-])
-
-const PT_WORDS = new Set([
-  "não", "nao", "está", "esta", "estás", "estou", "você", "voce", "para", "com", "uma", "uns",
-  "umas", "isso", "isto", "aquilo", "também", "tambem", "já", "ja", "muito", "muita", "obrigado",
-  "obrigada", "olá", "ola", "sim", "então", "entao", "porque", "quando", "onde", "como", "fazer",
-  "feito", "ficheiro", "ficheiros", "erro", "teste", "testes", "executar", "instalar", "atualizar",
-  "código", "codigo", "vou", "vamos", "aqui", "ali", "depois", "antes", "mais", "menos", "será",
-  "sera", "seu", "sua", "nosso", "nossa", "estão", "estao", "é", "são", "sao", "tem", "têm",
-  "tenho", "pode", "podem", "quero", "preciso", "voz", "texto", "mensagem", "mensagens",
-])
-
-const FR_WORDS = new Set([
-  "le", "la", "les", "un", "une", "des", "est", "et", "vous", "nous", "avec", "pour", "dans",
-  "sur", "pas", "qui", "je", "tu", "il", "elle", "sont", "être", "etre", "avoir", "faire",
-  "peut", "tout", "bien", "très", "tres", "aussi", "oui", "non", "bonjour", "merci", "au",
-  "aux", "du", "ce", "cette", "ces", "mais", "donc", "car", "ne", "plus", "sans", "sous",
-  "entre", "comme", "votre", "notre", "leur", "mon", "ton", "son", "ils", "elles", "voilà",
-  "voila", "alors", "toujours", "jamais", "encore", "déjà", "deja", "quelque", "chose",
-  "fait", "faites", "voulez", "peux", "dois", "voici", "d'accord", "c'est", "qu'il",
-])
-
-export type DetectedLanguage = "pt" | "en" | "fr"
-
-/** Very small heuristic: which language does this text look like? */
-export function detectLanguage(text: string): DetectedLanguage | undefined {
-  const lower = text.toLowerCase()
-  const words = lower.match(/[a-zà-ÿ']+/g) ?? []
-  let pt = 0
-  let en = 0
-  let fr = 0
-  for (const word of words) {
-    if (PT_WORDS.has(word)) pt++
-    if (EN_WORDS.has(word)) en++
-    if (FR_WORDS.has(word)) fr++
-  }
-  // Distinctive letters.
-  if (/[ãõ]/.test(lower)) pt += 2
-  if (/[œëï]/.test(lower)) fr += 2
-  if (/[áéíóúâêôà]/.test(lower)) pt += 1
-
-  if (fr > pt && fr >= en) return "fr"
-  if (en > pt && en >= fr) return "en"
-  if (pt > en && pt > fr) return "pt"
-  return "en" // inconclusive: English is the default
 }
 
 function pickVoice(cfg: VoiceConfig, text: string): { voice?: string; lang?: string } {

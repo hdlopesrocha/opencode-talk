@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "../logger.js";
+import { detectLanguage } from "../../lang.js";
 
 const log = createLogger("telegram-voice");
 
@@ -179,13 +180,6 @@ function runWhisper(python: string, script: string, wav: string, timeoutMs: numb
       else reject(new Error(`whisper exited ${code}: ${stderr.trim().slice(0, 200)}`));
     });
   });
-}
-function detectLanguage(text: string): "pt" | "en" | "fr" {
-  const lower = text.toLowerCase();
-  if (/[ãõ]/.test(lower)) return "pt";
-  if (/\b(the|and|you|with|for|from|this|that|will|hello|thanks|please)\b/.test(lower)) return "en";
-  if (/\b(le|la|les|vous|avec|pour|merci|bonjour)\b/.test(lower)) return "fr";
-  return "en"; // inconclusive: English is the default
 }
 
 /**

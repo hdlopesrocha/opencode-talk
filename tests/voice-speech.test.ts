@@ -18,6 +18,21 @@ describe("detectLanguage", () => {
     expect(detectLanguage("42")).toBe("en");
     expect(detectLanguage("!!!")).toBe("en");
   });
+
+  it("keeps Portuguese with lone English keywords (code talk)", () => {
+    expect(detectLanguage("Criei um loop for para percorrer a lista.")).toBe("pt");
+    expect(detectLanguage("Usa o with para gerir o contexto.")).toBe("pt");
+    expect(detectLanguage("O this refere-se à instância.")).toBe("pt");
+    expect(detectLanguage("Vou fazer o deploy agora.")).toBe("pt");
+    expect(detectLanguage("Fiz merge da branch principal.")).toBe("pt");
+  });
+
+  it("lets the majority win on mixed messages", () => {
+    expect(detectLanguage("Sure! Vou verificar isso.")).toBe("pt");
+    expect(detectLanguage("Sure! Let me check that for you.")).toBe("en");
+    expect(detectLanguage("Thank you!")).toBe("en");
+    expect(detectLanguage("Obrigado pela ajuda!")).toBe("pt");
+  });
 });
 
 describe("sanitize", () => {

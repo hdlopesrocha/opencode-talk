@@ -192,6 +192,8 @@ export interface NostrControl {
    * already selected). False when the relay adapter is not running.
    */
   welcome(sessionID: string, peerHex: string): Promise<boolean>;
+  /** Mirror a locally submitted prompt to the session's paired peer. */
+  mirrorPrompt(sessionID: string, text: string): Promise<void>;
 }
 
 export function createNostrControl(ctx: any, overrides: PluginNostrOverrides = {}): NostrControl {
@@ -268,6 +270,9 @@ export function createNostrControl(ctx: any, overrides: PluginNostrOverrides = {
       if (!adapter) return false;
       await adapter.sendWelcome(sessionID, peerHex);
       return true;
+    },
+    mirrorPrompt: async (sessionID: string, text: string): Promise<void> => {
+      await adapter?.mirrorPrompt(sessionID, text);
     },
   };
 }

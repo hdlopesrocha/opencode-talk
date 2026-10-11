@@ -56,6 +56,11 @@ client — including a Telegram group where every session gets its own topic.**
   images (Blossom). `/nostr off|on` halts/resumes relay traffic.
 - **Any other `/command`** — forwarded to OpenCode as-is, so custom commands
   and skills work remotely too.
+- **Local prompts are mirrored** — when you type a prompt in OpenCode
+  (TUI/desktop/web, including `/mic` transcripts), it also appears in every
+  Telegram/XMPP chat and Nostr DM bound to that session, so remote readers see
+  both sides of the conversation. Remote-originated prompts and slash commands
+  are never echoed.
 - **Agent tool** — `telegram_send_image` lets the agent push screenshots,
   charts and renders to your Telegram/Nostr chat.
 - **Session API + remote plugin** — REST + SSE for any client, typed RPC and
@@ -478,6 +483,10 @@ Nostr    → Nostr Adapter   →┘
   `telegram_send_image` agent tool ("run the app 2 minutes and send me the
   screenshot"), and the in-process Nostr bridge (`/nostr`). Install:
   [docs/PLUGIN_INSTALL.md](docs/PLUGIN_INSTALL.md).
+- **Prompt mirroring**: a prompt typed locally in OpenCode (TUI/desktop/web,
+  `/mic` transcripts included) is posted as `👤 …` into every Telegram chat,
+  XMPP chat and Nostr DM bound to that session. Prompts that came from a
+  remote bridge are not echoed back, and slash commands stay local.
 
 Quick start (plugin-native Telegram + Nostr — no API/bot processes):
 

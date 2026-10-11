@@ -141,19 +141,30 @@ export default Plugin.define({
           isRunning: () => runtime.nostrRunning(),
           ensureSession: (sessionID: string) => runtime.nostrEnsureSession(sessionID),
           welcome: (sessionID: string, peerHex: string) => runtime.nostrWelcome(sessionID, peerHex),
+          mirrorPrompt: (sessionID: string, text: string) => runtime.nostrMirrorPrompt(sessionID, text),
         },
         stateFile: botStateFile,
       });
     } catch (err) {
       console.error(`[telegram-bridge] Nostr bridge failed to start: ${String(err)}`);
     }
-    // --- Prompt hook: mark remote prompts without altering context --------
+    // --- Prompt hook: mark remote prompts, mirror local ones --------------
     await ctx.session.hook("prompt", (e) => {
       const meta = (e as { metadata?: Record<string, unknown> }).metadata;
       if (meta?.["source"] === "telegram-bridge") {
         // Keep native context; just ensure delivery steers the running agent.
         (e as { delivery?: string }).delivery = "steer";
       }
+      // Prompts typed locally (TUI/desktop/web, /mic transcripts) also appear
+      // in the remote chats bound to the session, so remote readers see both
+      // sides. Bridge-originated prompts are already there, and slash commands
+      // stay local. The runtime dedupes the per-location hook registrations.
+      const source = typeof meta?.["source"] === "string" ? (meta["source"] as string) : "";
+      const sessionID = (e as { sessionID?: string }).sessionID;
+      const messageID = (e as { messageID?: string }).messageID;
+      const text = ((e as { prompt?: { text?: string } }).prompt?.text ?? "").trim();
+      if (source || !sessionID || !text || text.startsWith("/")) return;
+      void runtime.mirrorPrompt(sessionID, messageID ?? "", text).catch(() => {});
     });
 
     // --- Agent tool: send an image file to connected chats -----------------

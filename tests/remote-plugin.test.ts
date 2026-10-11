@@ -1,8 +1,9 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import plugin from "../remote-plugin/index.js";
 import { TelegramBridge } from "../remote-plugin/rpc.js";
+import { RemoteRuntime } from "../src/remote/pluginRuntime.js";
 
 // Full-plugin setup reads live config: pin it to inert values so tests never
 // open real relay/Telegram connections (dotenv never overrides existing env).
@@ -107,6 +108,33 @@ describe("telegram-bridge plugin setup", () => {
     );
     expect(out).toEqual({ inboxID: "msg_1" });
     expect(calls["prompt"][0]).toMatchObject({ sessionID: "ses_1", text: "hello" });
+  });
+
+  it("mirrors local prompts, skips remote ones and commands, and steers bridge prompts", async () => {
+    const { ctx, hooks } = makeCtx();
+    await (plugin as any).setup(ctx);
+    const spy = vi.spyOn(RemoteRuntime.prototype, "mirrorPrompt").mockResolvedValue();
+    try {
+      const hook = hooks["prompt"]!;
+      hook({ sessionID: "ses_1", messageID: "msg_1", prompt: { text: "typed locally" }, delivery: "queue" });
+      expect(spy).toHaveBeenCalledWith("ses_1", "msg_1", "typed locally");
+
+      spy.mockClear();
+      const remote = {
+        sessionID: "ses_1",
+        messageID: "msg_2",
+        prompt: { text: "from telegram" },
+        metadata: { source: "telegram-bridge" },
+        delivery: "queue",
+      };
+      hook(remote);
+      expect(remote.delivery).toBe("steer"); // bridge prompts keep steering
+      hook({ sessionID: "ses_1", messageID: "msg_3", prompt: { text: "/sound on" } });
+      hook({ sessionID: "ses_1", messageID: "msg_4", prompt: { text: "   " } });
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("sendMessage returns typed not_found for missing sessions", async () => {

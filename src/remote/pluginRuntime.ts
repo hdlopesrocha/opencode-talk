@@ -84,6 +84,8 @@ export class RemoteRuntime {
   private xmpp: PluginXmppBotHandle | undefined;
   private bridgeAbort: AbortController | undefined;
   private speak: ((text: string) => Promise<Uint8Array | null>) | undefined;
+  /** Locally submitted prompts already mirrored (messageID -> once). */
+  private readonly mirroredPrompts = new Set<string>();
 
   constructor(cfg: AppConfig = loadConfig(), deps: RemoteRuntimeDeps = {}) {
     this.cfg = cfg;
@@ -165,6 +167,11 @@ export class RemoteRuntime {
     return this.nostr ? this.nostr.welcome(sessionID, peerHex) : Promise.resolve(false);
   }
 
+  /** Mirror a locally submitted prompt to the session's paired Nostr peer. */
+  nostrMirrorPrompt(sessionID: string, text: string): Promise<void> {
+    return this.nostr?.mirrorPrompt(sessionID, text) ?? Promise.resolve();
+  }
+
   // --- Telegram (driven by every location's `/telegram` command) ----------
 
   /** Start (or restart) polling; persists the running state and (when given) the group. */
@@ -215,6 +222,25 @@ export class RemoteRuntime {
   /** Create/reuse a session's thread in the registered room. Undefined when no bot runs. */
   xmppLinkSession(sessionID: string): Promise<string | undefined> {
     return this.xmpp ? this.xmpp.linkSession(sessionID) : Promise.resolve(undefined);
+  }
+
+  // --- Prompt mirroring ---------------------------------------------------
+
+  /**
+   * Mirror a locally submitted prompt (typed in OpenCode, not in a remote
+   * chat) into every remote chat bound to the session. The prompt hook is
+   * registered per plugin location, so dedupe by messageID process-wide.
+   */
+  async mirrorPrompt(sessionID: string, messageID: string, text: string): Promise<void> {
+    const key = messageID || `${sessionID}:${text}`;
+    if (this.mirroredPrompts.has(key)) return;
+    this.mirroredPrompts.add(key);
+    if (this.mirroredPrompts.size > 2000) this.mirroredPrompts.clear();
+    await Promise.allSettled([
+      this.telegram?.mirrorPrompt(sessionID, text) ?? Promise.resolve(),
+      this.xmpp?.mirrorPrompt(sessionID, text) ?? Promise.resolve(),
+      this.nostr?.mirrorPrompt(sessionID, text) ?? Promise.resolve(),
+    ]);
   }
 
   // --- internals ------------------------------------------------------------

@@ -886,6 +886,20 @@ export class PluginXmppBot {
     return this.mapping.chatsForSession(sessionID);
   }
 
+  /**
+   * Mirror a locally submitted prompt (typed in OpenCode, not in XMPP) into
+   * every chat bound to the session, so remote readers see both sides of the
+   * conversation. Remote-originated prompts are filtered by the caller.
+   */
+  async mirrorPrompt(sessionID: string, text: string): Promise<void> {
+    for (const key of this.chatsFor(sessionID)) {
+      const target = this.targetOfKey(key);
+      await target.sendText(`👤 ${text}`).catch((err) => {
+        log.warn("Prompt mirror failed", { error: String(err), session: sessionID, key });
+      });
+    }
+  }
+
   private async routeOutgoing(ev: SessionEvent): Promise<void> {
     const keys = this.chatsFor(ev.sessionID);
     if (keys.length === 0) return;
@@ -1218,6 +1232,8 @@ export interface PluginXmppBotHandle {
   invite(jid: string): Promise<void>;
   /** Create/reuse the session's thread in the registered room; summary string. */
   linkSession(sessionID: string): Promise<string>;
+  /** Mirror a locally submitted prompt into every chat bound to the session. */
+  mirrorPrompt(sessionID: string, text: string): Promise<void>;
 }
 
 /**
@@ -1236,6 +1252,7 @@ export async function setupPluginXmppBot(
     linkSession: async () => {
       throw new Error("XMPP bot is not running — connect it with /xmpp <jid> <password>");
     },
+    mirrorPrompt: async () => {},
   });
   const cfg = loadConfig();
   const jid = overrides.jid ?? cfg.xmppJid;
@@ -1291,6 +1308,7 @@ export async function setupPluginXmppBot(
       },
       invite: (jidTo: string) => bot.inviteToProjects(jidTo),
       linkSession: (sessionID: string) => bot.linkSession(sessionID),
+      mirrorPrompt: (sessionID: string, text: string) => bot.mirrorPrompt(sessionID, text),
     };
   }
 
@@ -1348,5 +1366,6 @@ export async function setupPluginXmppBot(
     },
     invite: (jidTo: string) => bot.inviteToProjects(jidTo),
     linkSession: (sessionID: string) => bot.linkSession(sessionID),
+    mirrorPrompt: (sessionID: string, text: string) => bot.mirrorPrompt(sessionID, text),
   };
 }

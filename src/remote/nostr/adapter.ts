@@ -710,6 +710,17 @@ export class NostrAdapter {
       }
     }
   }
+
+  /**
+   * Mirror a locally submitted prompt (typed in OpenCode, not in Nostr) to
+   * the session's paired peer, so remote readers see both sides of the
+   * conversation. Remote-originated prompts are filtered by the caller.
+   */
+  async mirrorPrompt(sessionID: string, text: string): Promise<void> {
+    const peerHex = this.peers.get(sessionID);
+    if (!peerHex) return;
+    await this.sendToPeer(sessionID, peerHex, `👤 ${text}`);
+  }
 }
 
 function formatStatusText(s: SessionSummary): string {

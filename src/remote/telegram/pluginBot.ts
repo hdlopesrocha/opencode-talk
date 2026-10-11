@@ -1511,6 +1511,22 @@ export class PluginTelegramBot {
     return this.mapping.chatsForSession(sessionID);
   }
 
+  /**
+   * Mirror a locally submitted prompt (typed in OpenCode, not in Telegram)
+   * into every chat bound to the session, so remote readers see both sides
+   * of the conversation. Remote-originated prompts are filtered by the caller.
+   */
+  async mirrorPrompt(sessionID: string, text: string): Promise<void> {
+    for (const key of this.chatsFor(sessionID)) {
+      const target = this.targetOfKey(key);
+      try {
+        await target.sendRaw(`👤 ${text}`);
+      } catch (err) {
+        log.warn("Prompt mirror failed", { error: String(err), session: sessionID, key });
+      }
+    }
+  }
+
   private async routeOutgoing(ev: SessionEvent): Promise<void> {
     const keys = this.chatsFor(ev.sessionID);
     if (keys.length === 0) return;
@@ -1834,6 +1850,8 @@ export interface PluginTelegramBotHandle {
   invite(chatId: number): Promise<void>;
   /** Create/reuse the session's topic in the registered group; summary string. */
   linkSession(sessionID: string): Promise<string>;
+  /** Mirror a locally submitted prompt into every chat bound to the session. */
+  mirrorPrompt(sessionID: string, text: string): Promise<void>;
 }
 
 export async function setupPluginTelegramBot(
@@ -1846,6 +1864,7 @@ export async function setupPluginTelegramBot(
     linkSession: async () => {
       throw new Error("Telegram bot is not running — connect it with /telegram <bot-token> <group-id>");
     },
+    mirrorPrompt: async () => {},
   });
   const cfg = loadConfig();
   const token = overrides.token ?? cfg.telegramBotToken;
@@ -1899,6 +1918,7 @@ export async function setupPluginTelegramBot(
       stop: () => {},
       invite: (chatId: number) => bot.inviteToProjects(chatId),
       linkSession: (sessionID: string) => bot.linkSession(sessionID),
+      mirrorPrompt: (sessionID: string, text: string) => bot.mirrorPrompt(sessionID, text),
     };
   }
 
@@ -1916,5 +1936,6 @@ export async function setupPluginTelegramBot(
     },
     invite: (chatId: number) => bot.inviteToProjects(chatId),
     linkSession: (sessionID: string) => bot.linkSession(sessionID),
+    mirrorPrompt: (sessionID: string, text: string) => bot.mirrorPrompt(sessionID, text),
   };
 }

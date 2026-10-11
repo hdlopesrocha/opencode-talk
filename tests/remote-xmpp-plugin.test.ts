@@ -346,6 +346,29 @@ describe("PluginXmppBot outgoing", () => {
     expect(sent.some((s) => s.body.includes("Done"))).toBe(true);
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it("mirrors locally submitted prompts into bound chats", async () => {
+    const dir = tmpDir();
+    try {
+      const { api, sent } = makeApi();
+      const { ctx } = makeCtx([summary("ses_1")]);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("friend@example.com", "ses_1");
+      const bot = new PluginXmppBot(ctx, {
+        api,
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set(["friend@example.com"]),
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      await bot.mirrorPrompt("ses_1", "typed locally");
+      await bot.mirrorPrompt("ses_unbound", "nowhere");
+      expect(sent).toEqual([{ to: "friend@example.com", body: "👤 typed locally" }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("setupPluginXmppBot", () => {

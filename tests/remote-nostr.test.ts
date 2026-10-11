@@ -413,6 +413,37 @@ describe("NostrAdapter outgoing", () => {
     }
   });
 
+  it("mirrors locally submitted prompts to the paired peer", async () => {
+    const dir = tmpDir();
+    try {
+      const state: FakeApiState = { sessions: [summary("ses_1")], sent: [], aborted: [], createdOpts: [], switched: [], media: new Map() };
+      const peerSecret = generateSecretKey();
+      const peerHex = getPublicKey(peerSecret);
+      const transport = new FakeTransport();
+      const keys = new SessionKeyStore(join(dir, "keys.json"));
+      const peers = new PeerStore(join(dir, "peers.json"));
+      keys.getOrCreate("ses_1");
+      peers.set("ses_1", peerHex);
+      const adapter = new NostrAdapter({
+        api: makeApi(state),
+        relays: ["wss://relay.test"],
+        transport,
+        keys,
+        peers,
+        allowedPeers: new Set([peerHex]),
+        subscribeApiEvents: async function* () {},
+      });
+      await adapter.mirrorPrompt("ses_1", "typed in the TUI");
+      await adapter.mirrorPrompt("ses_unpaired", "nowhere to go");
+      expect(transport.published).toHaveLength(1);
+      const dm = transport.published[0]!.event;
+      expect(dm.tags).toEqual([["p", peerHex]]);
+      expect(nip04.decrypt(peerSecret, dm.pubkey, dm.content)).toBe("👤 typed in the TUI");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("sends completed text + blossom image URL", async () => {
     const dir = tmpDir();
     try {

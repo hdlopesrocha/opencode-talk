@@ -15,6 +15,7 @@ class FakeControl implements NostrControl {
   stops = 0;
   sessions: string[] = [];
   welcomes: { sessionID: string; peerHex: string }[] = [];
+  mirrors: { sessionID: string; text: string }[] = [];
   running = false;
 
   start(): boolean {
@@ -40,6 +41,10 @@ class FakeControl implements NostrControl {
     if (!this.running) return false;
     this.welcomes.push({ sessionID, peerHex });
     return true;
+  }
+
+  async mirrorPrompt(sessionID: string, text: string): Promise<void> {
+    this.mirrors.push({ sessionID, text });
   }
 }
 
@@ -82,6 +87,7 @@ function makeHarness(cfg: AppConfig) {
   const botStops: number[] = [];
   const invites: number[] = [];
   const links: string[] = [];
+  const telegramMirrors: { sessionID: string; text: string }[] = [];
   const deps: RemoteRuntimeDeps = {
     createNostr: (ctx, overrides) => {
       const control = new FakeControl();
@@ -101,11 +107,14 @@ function makeHarness(cfg: AppConfig) {
           links.push(sessionID);
           return `linked ${sessionID}`;
         },
+        mirrorPrompt: async (sessionID: string, text: string) => {
+          telegramMirrors.push({ sessionID, text });
+        },
       };
       return handle;
     },
   };
-  return { runtime: new RemoteRuntime(cfg, deps), controls, botStarts, botStops, invites, links };
+  return { runtime: new RemoteRuntime(cfg, deps), controls, botStarts, botStops, invites, links, telegramMirrors };
 }
 
 describe("RemoteRuntime", () => {
@@ -268,5 +277,26 @@ describe("RemoteRuntime", () => {
     expect(a.emitted.filter((e) => e.name === "lifecycle")).toHaveLength(1);
     expect(a.emitted.filter((e) => e.name === "activity")).toHaveLength(1);
     expect(b.emitted).toHaveLength(0);
+  });
+
+  it("mirrors a local prompt once to every connected bot", async () => {
+    const dir = makeDir();
+    dirs.push(dir);
+    const { runtime, controls, telegramMirrors } = makeHarness(cfgFor(dir));
+    await runtime.addLocation("a", { ctx: makeCtx().ctx });
+
+    await runtime.mirrorPrompt("ses_1", "msg_1", "typed in the TUI");
+    // The prompt hook is registered per location: the same messageID is sent once.
+    await runtime.mirrorPrompt("ses_1", "msg_1", "typed in the TUI");
+    await runtime.mirrorPrompt("ses_1", "msg_2", "another prompt");
+
+    expect(telegramMirrors).toEqual([
+      { sessionID: "ses_1", text: "typed in the TUI" },
+      { sessionID: "ses_1", text: "another prompt" },
+    ]);
+    expect(controls[0]!.control.mirrors).toEqual([
+      { sessionID: "ses_1", text: "typed in the TUI" },
+      { sessionID: "ses_1", text: "another prompt" },
+    ]);
   });
 });

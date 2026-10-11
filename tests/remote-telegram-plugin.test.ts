@@ -733,6 +733,33 @@ describe("PluginTelegramBot outgoing", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("mirrors locally submitted prompts into bound chats", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([]);
+      const { ctx } = makeCtx([summary("ses_1")]);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set(111, "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      await bot.mirrorPrompt("ses_1", "typed in the TUI");
+      await bot.mirrorPrompt("ses_unbound", "nowhere to go");
+      const sends = sent.filter((c) => c.method === "sendMessage");
+      expect(sends).toHaveLength(1);
+      expect(sends[0]!.params["chat_id"]).toBe(111);
+      expect(String(sends[0]!.params["text"])).toBe("👤 typed in the TUI");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("PluginTelegramBot unknown commands", () => {

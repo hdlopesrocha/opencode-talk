@@ -128,7 +128,11 @@ export function buildApp(deps: {
         res.status(404).json({ error: "not_found", message: `session ${sessionID} not found` });
         return;
       }
-      const inbox = (await opencode.session.prompt({ sessionID, text })) as any;
+      const inbox = (await opencode.session.prompt({
+        sessionID,
+        text,
+        metadata: { source: "session-api" },
+      })) as any;
       const seq = events.nextSeq();
       events.publish({
         id: `session.started:${sessionID}:${seq}`,

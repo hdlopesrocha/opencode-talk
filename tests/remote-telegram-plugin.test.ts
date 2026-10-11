@@ -994,6 +994,76 @@ describe("PluginTelegramBot outgoing", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 20000);
+
+  it("delivers streamed replies once, not buffer plus full text", async () => {
+    const dir = tmpDir();
+    try {
+      const events = [
+        { type: "session.execution.started", data: { sessionID: "ses_1" } },
+        { type: "session.text.delta", data: { sessionID: "ses_1", delta: "Hello " } },
+        { type: "session.text.delta", data: { sessionID: "ses_1", delta: "world" } },
+        { type: "session.text.ended", data: { sessionID: "ses_1", text: "Hello world" } },
+        { type: "session.execution.succeeded", data: { sessionID: "ses_1" } },
+      ];
+      const { fetchImpl, sent } = makeFetch([]);
+      const { ctx } = makeCtx([summary("ses_1")], events);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set(111, "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(120);
+      abort.abort();
+      bot.stop();
+      const texts = sent.map((c) => String(c.params["text"] ?? ""));
+      const finals = texts.filter((t) => t.startsWith("✓"));
+      expect(finals).toEqual(["✓ Hello world"]);
+      // No redundant "Done." after the delivered reply.
+      expect(texts.some((t) => t.includes("Done."))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still posts Done for runs without any reply text", async () => {
+    const dir = tmpDir();
+    try {
+      const events = [
+        { type: "session.execution.started", data: { sessionID: "ses_1" } },
+        { type: "session.execution.succeeded", data: { sessionID: "ses_1" } },
+      ];
+      const { fetchImpl, sent } = makeFetch([]);
+      const { ctx } = makeCtx([summary("ses_1")], events);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set(111, "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(80);
+      abort.abort();
+      bot.stop();
+      const texts = sent.map((c) => String(c.params["text"] ?? ""));
+      expect(texts.some((t) => t.includes("Done."))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("PluginTelegramBot unknown commands", () => {

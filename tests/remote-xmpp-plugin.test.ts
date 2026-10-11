@@ -401,6 +401,40 @@ describe("PluginXmppBot outgoing", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("delivers streamed replies once, not buffer plus full text", async () => {
+    const dir = tmpDir();
+    try {
+      const events = [
+        { type: "session.execution.started", data: { sessionID: "ses_1" } },
+        { type: "session.text.delta", data: { sessionID: "ses_1", delta: "Hello " } },
+        { type: "session.text.delta", data: { sessionID: "ses_1", delta: "world" } },
+        { type: "session.text.ended", data: { sessionID: "ses_1", text: "Hello world" } },
+        { type: "session.execution.succeeded", data: { sessionID: "ses_1" } },
+      ];
+      const { api, sent } = makeApi();
+      const { ctx } = makeCtx([summary("ses_1")], events);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("friend@example.com", "ses_1");
+      const bot = new PluginXmppBot(ctx, {
+        api,
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set(["friend@example.com"]),
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await new Promise((r) => setTimeout(r, 80));
+      abort.abort();
+      bot.stop();
+      const finals = sent.map((s) => s.body).filter((b) => b.startsWith("✓"));
+      expect(finals).toEqual(["✓ Hello world"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("setupPluginXmppBot", () => {

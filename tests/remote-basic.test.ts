@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { normalizeNativeEvent, normalizeSession } from "../src/remote/opencode/normalize.js";
+import { joinFinalText, normalizeNativeEvent, normalizeSession } from "../src/remote/opencode/normalize.js";
 import { EventBus } from "../src/remote/session-api/eventBus.js";
 import { parseSSEChunk } from "../src/remote/telegram/adapter.js";
 import { formatSessionsList, splitMessage } from "../src/remote/telegram/formatting.js";
@@ -94,6 +94,17 @@ describe("normalizeNativeEvent", () => {
     expect(
       normalizeNativeEvent({ seq: 8, nativeType: "session.step.streamed", data: { sessionID: "s" } }),
     ).toEqual([]);
+  });
+});
+
+describe("joinFinalText", () => {
+  it("prefers the complete closing text over buffered deltas", () => {
+    expect(joinFinalText("hello ", "hello world")).toBe("hello world");
+    expect(joinFinalText("", "hello world")).toBe("hello world");
+  });
+
+  it("concatenates when the closing text is only the tail", () => {
+    expect(joinFinalText("lost head", "tail")).toBe("lost headtail");
   });
 });
 

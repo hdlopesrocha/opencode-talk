@@ -398,6 +398,59 @@ describe("setupTelegramCommand token", () => {
     }
   });
 
+  it("verifies the topic on setup flows but reuses silently on bare /telegram", async () => {
+    const dir = tmpDir();
+    try {
+      const file = join(dir, "telegram-token");
+      const stateFile = join(dir, "state.json");
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      const { ctx, commands } = makeCtx();
+      const fetchImpl = (async () => ({
+        json: async () => ({
+          ok: true,
+          result: { id: 8766321578, is_bot: true, username: "opencode_talk_bot" },
+        }),
+      })) as unknown as typeof fetch;
+      const links: { sessionID: string; opts?: { verify?: boolean } }[] = [];
+      const stop = await setupTelegramCommand(ctx, {
+        mapping,
+        tokenFile: file,
+        stateFile,
+        fetchImpl,
+        onToken: async () => {},
+        onLinkSession: async (sessionID, opts) => {
+          links.push({ sessionID, opts });
+          return `topic linked to ${sessionID}`;
+        },
+      });
+      const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        const cmd = commands.find((c) => c.name === "telegram")!;
+        await cmd.execute({
+          sessionID: "ses_1",
+          prompt: { text: `/telegram ${GOOD} -1001234567890` },
+        });
+        expect(links).toEqual([{ sessionID: "ses_1", opts: { verify: true } }]);
+        await cmd.execute({ sessionID: "ses_2", prompt: { text: "/telegram" } });
+        expect(links).toEqual([
+          { sessionID: "ses_1", opts: { verify: true } },
+          { sessionID: "ses_2", opts: undefined },
+        ]);
+        await cmd.execute({
+          sessionID: "ses_3",
+          prompt: { text: "/telegram group -1001234567890" },
+        });
+        expect(links[2]).toEqual({ sessionID: "ses_3", opts: { verify: true } });
+      } finally {
+        spy.mockRestore();
+        stop();
+        cleanup();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("bare /telegram ensures the session topic; /telegram status stays side-effect free", async () => {
     const dir = tmpDir();
     try {

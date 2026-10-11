@@ -526,6 +526,115 @@ describe("PluginTelegramBot group topics", () => {
     }
   });
 
+  it("linkSession verify recreates a topic deleted in Telegram", async () => {
+    const dir = tmpDir();
+    try {
+      const sent: { method: string; params: Record<string, unknown> }[] = [];
+      let msgId = 200;
+      const fetchImpl = (async (url: string, init?: RequestInit) => {
+        const method = url.split("/").pop() ?? "";
+        let params: Record<string, unknown> = {};
+        try {
+          params = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        } catch {
+          params = {};
+        }
+        // Only the deleted topic fails; the recreated one accepts messages.
+        if (method === "sendMessage" && params["message_thread_id"] === 77) {
+          throw new Error("Bad Request: message thread not found");
+        }
+        sent.push({ method, params });
+        if (method === "createForumTopic") {
+          msgId += 1;
+          return { json: async () => ({ ok: true, result: { message_thread_id: msgId } }) } as Response;
+        }
+        return { json: async () => ({ ok: true, result: true }) } as Response;
+      }) as unknown as typeof fetch;
+      const { ctx } = makeCtx([summary("ses_1", "/p/alpha")]);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("-100999:77", "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        groupID: -100999,
+      });
+      const result = await bot.linkSession("ses_1", { verify: true });
+      expect(result).toContain("created and linked");
+      expect(mapping.get("-100999:77")).toBeUndefined();
+      const keys = mapping.chatsForSession("ses_1");
+      expect(keys).toHaveLength(1);
+      expect(keys[0]).toBe("-100999:201");
+      expect(sent.some((c) => c.method === "createForumTopic")).toBe(true);
+      bot.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("linkSession verify keeps a live topic without recreating it", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([]);
+      const { ctx } = makeCtx([summary("ses_1", "/p/alpha")]);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("-100999:77", "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", fetchImpl),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        groupID: -100999,
+      });
+      const result = await bot.linkSession("ses_1", { verify: true });
+      expect(result).toContain("already linked");
+      expect(result).toContain("topic 77");
+      expect(mapping.get("-100999:77")).toBe("ses_1");
+      expect(sent.some((c) => c.method === "createForumTopic")).toBe(false);
+      bot.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("linkSession verify keeps the binding on transient probe failures", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl, sent } = makeFetch([]);
+      const flakyFetch = (async (url: string, init?: RequestInit) => {
+        if (String(url).split("/").pop() === "sendMessage") throw new Error("Bad Request: Slow down");
+        return fetchImpl(url, init);
+      }) as unknown as typeof fetch;
+      const { ctx } = makeCtx([summary("ses_1", "/p/alpha")]);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("-100999:77", "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", flakyFetch),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+        groupID: -100999,
+      });
+      const result = await bot.linkSession("ses_1", { verify: true });
+      expect(result).toContain("already linked");
+      expect(mapping.get("-100999:77")).toBe("ses_1");
+      expect(sent.some((c) => c.method === "createForumTopic")).toBe(false);
+      bot.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("a user-created topic creates and binds a session", async () => {
     const dir = tmpDir();
     try {

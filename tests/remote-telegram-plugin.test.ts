@@ -760,6 +760,71 @@ describe("PluginTelegramBot outgoing", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("unlinks topics deleted in Telegram instead of failing every send", async () => {
+    const dir = tmpDir();
+    try {
+      const events = [
+        { type: "session.execution.started", data: { sessionID: "ses_1" } },
+        { type: "session.text.ended", data: { sessionID: "ses_1", text: "all done" } },
+      ];
+      const { fetchImpl } = makeFetch([]);
+      const failingFetch = (async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith("/getUpdates")) return fetchImpl(url, init);
+        throw new Error("Bad Request: message thread not found");
+      }) as unknown as typeof fetch;
+      const { ctx } = makeCtx([summary("ses_1")], events);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("-100999:77", "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", failingFetch),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(80);
+      abort.abort();
+      bot.stop();
+      expect(mapping.get("-100999:77")).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("mirrorPrompt unlinks deleted topics but keeps plain chats", async () => {
+    const dir = tmpDir();
+    try {
+      const { fetchImpl } = makeFetch([]);
+      const failingFetch = (async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith("/getUpdates")) return fetchImpl(url, init);
+        throw new Error("Bad Request: message thread not found");
+      }) as unknown as typeof fetch;
+      const { ctx } = makeCtx([summary("ses_1")]);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("-100999:77", "ses_1");
+      mapping.set(111, "ses_1");
+      const bot = new PluginTelegramBot(ctx, {
+        api: new TelegramBotApi("test-token", failingFetch),
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set([111]),
+        pollTimeoutSec: 0,
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      await bot.mirrorPrompt("ses_1", "typed in the TUI");
+      expect(mapping.get("-100999:77")).toBeUndefined();
+      expect(mapping.get(111)).toBe("ses_1");
+      bot.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("PluginTelegramBot unknown commands", () => {

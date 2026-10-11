@@ -3,6 +3,7 @@ import { GITHUB_PROFILE } from "../branding.js";
 import type { FetchedMedia } from "../client.js";
 import type { ModelRef, SessionEvent, SessionModel, SessionSummary } from "../types.js";
 import { ChatProjectStore } from "../chatProjects.js";
+import { joinFinalText } from "../opencode/normalize.js";
 import { MODEL_EFFORTS, formatProjectsList, mergeProjects, parseEffortOnly, parseModelPick, projectName, resolveProject } from "../projects.js";
 import { uploadToBlossom } from "./blossom.js";
 import { DM_KIND, createDM, parseDM, splitDM } from "./dm.js";
@@ -628,13 +629,17 @@ export class NostrAdapter {
         if (ev.delta) {
           this.bufferFor(ev.sessionID).text += ev.text;
         } else {
+          // The closing event carries the complete text, not the remainder.
+          const buf = this.bufferFor(ev.sessionID);
+          const text = joinFinalText(buf.text, ev.text);
           this.buffers.delete(ev.sessionID);
-          await this.sendToPeer(ev.sessionID, peerHex, `✓ ${ev.text}`);
+          await this.sendToPeer(ev.sessionID, peerHex, `✓ ${text}`);
         }
         break;
       }
       case "session.completed": {
         const buf = this.buffers.get(ev.sessionID);
+        if (!buf && !ev.text?.trim()) break; // reply already delivered; skip redundant "Done."
         const text = ev.text?.trim() || buf?.text.trim() || "Done.";
         this.buffers.delete(ev.sessionID);
         this.errorNotified.delete(ev.sessionID);

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "../config.js";
 import { createLogger } from "../logger.js";
-import { normalizeNativeEvent } from "../opencode/normalize.js";
+import { joinFinalText, normalizeNativeEvent } from "../opencode/normalize.js";
 import type { ModelRef, SessionEvent, SessionModel, SessionSummary } from "../types.js";
 import { SessionKeyStore, hexToNpub, normalizePeer } from "../nostr/keys.js";
 import { PeerStore } from "../nostr/peers.js";
@@ -1638,7 +1638,7 @@ export class PluginTelegramBot {
             const tail = st.textBuffer.slice(-300);
             await this.upsertProgress(key, progressLine(`Working...\n\n${tail}`));
           } else {
-            const final = st.textBuffer + ev.text;
+            const final = joinFinalText(st.textBuffer, ev.text);
             await this.finishLive(key, final);
             this.failedRuns.delete(ev.sessionID);
             await this.maybeSendVoice(target, ev.sessionID, final);
@@ -1647,6 +1647,7 @@ export class PluginTelegramBot {
         }
         case "session.completed": {
           const st = this.live.get(key);
+          if (!st && !ev.text?.trim()) break; // reply already delivered; skip redundant "Done."
           const text = ev.text?.trim() || st?.textBuffer?.trim() || "Done.";
           await this.finishLive(key, text);
           this.failedRuns.delete(ev.sessionID);

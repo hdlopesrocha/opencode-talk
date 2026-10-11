@@ -13,6 +13,7 @@ import {
 } from "./formatting.js";
 import { SessionKeyStore, hexToNpub, normalizePeer } from "../nostr/keys.js";
 import { PeerStore } from "../nostr/peers.js";
+import { joinFinalText } from "../opencode/normalize.js";
 import { SessionMapping } from "./sessionMapping.js";
 import { PollLock, defaultPollLockFile } from "./pollLock.js";
 import { GITHUB_PROFILE } from "../branding.js";
@@ -341,18 +342,20 @@ async function routeEvent(
         ensureLive(chatKey, ev.sessionID, live);
         const st = live.get(chatKey);
         if (!st || !ev.text) break;
-        st.textBuffer += ev.text;
         if (ev.delta) {
+          st.textBuffer += ev.text;
           const tail = st.textBuffer.slice(-300);
           await upsertProgress(bot, chatId, chatKey, live, progressLine(`Working...\n\n${tail}`), false);
         } else {
-          await finishLive(bot, api, chatId, chatKey, live, st.textBuffer);
+          // The closing event carries the complete text, not the remainder.
+          await finishLive(bot, api, chatId, chatKey, live, joinFinalText(st.textBuffer, ev.text));
           failedRuns.delete(ev.sessionID);
         }
         break;
       }
       case "session.completed": {
         const st = live.get(chatKey);
+        if (!st && !ev.text?.trim()) break; // reply already delivered; skip redundant "Done."
         const text = ev.text?.trim() || st?.textBuffer?.trim() || "Done.";
         await finishLive(bot, api, chatId, chatKey, live, text, ev.attachments);
         failedRuns.delete(ev.sessionID);

@@ -240,6 +240,19 @@ export function normalizeNativeEvent(input: NormalizedEventInput): SessionEvent[
   }
 }
 
+/**
+ * Join streamed deltas with the closing full-text event. `session.text.ended`
+ * carries the COMPLETE message, so appending it to the buffered deltas would
+ * deliver the reply twice in one chat message (and speak it twice). Prefer
+ * the authoritative full text when it already contains the buffer; otherwise
+ * concatenate (the closing event may carry only the tail when deltas were
+ * lost).
+ */
+export function joinFinalText(buffered: string, text: string): string {
+  if (buffered && text.startsWith(buffered)) return text;
+  return buffered + text;
+}
+
 /** Handles completed assistant text via message polling fallback (see eventBus). */
 export function assistantTextEvent(
   seq: number,

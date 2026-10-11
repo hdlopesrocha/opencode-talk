@@ -194,7 +194,8 @@ Notes:
 - `TELEGRAM_ALLOWED_USERS` must contain your user id (group member).
 - Deleting a topic in Telegram auto-unlinks it on the next send to that
   topic; re-running `/telegram <bot-token> <group-id>` (or
-  `/telegram group <group-id>`) recreates the missing topic, while bare
+  `/telegram group <group-id>`, or simply `/telegram sync` to reuse the saved
+  token and group) recreates the missing topic, while bare
   `/telegram` reuses the live one silently.
 
 Nostr pairing needs the Nostr adapter running too (`npm run dev:nostr`) —

@@ -99,6 +99,7 @@ export async function setupTelegramCommand(
                 `/telegram <bot-token> — verify, save (0600), connect the bot (no group)\n` +
                 `/telegram group <group-id> — connect the "Opencode Talk" group (one topic per session)\n` +
                 `/telegram <bot-token> <group-id> — connect bot + group at once\n` +
+                `/telegram sync — reconnect with the saved token + group (same as above)\n` +
                 `/telegram <chat-id> — link an extra chat to this session (id via @userinfobot)\n` +
                 `/telegram unlink [chat-id] — unlink one chat, or all on this session\n` +
                 `/telegram stop|start — halt/resume bot communication\n` +
@@ -139,6 +140,62 @@ export async function setupTelegramCommand(
               }
             }
             await linkSessionTopic(sessionID, true);
+            return;
+          }
+          if (/^sync$/i.test(head)) {
+            if (parts.length > 1) {
+              console.log(
+                `[telegram] usage: /telegram sync — reconnects with the saved token and group, ` +
+                  `same as repeating /telegram <bot-token> <group-id>.`,
+              );
+              return;
+            }
+            // Same flow as /telegram <bot-token> <group-id>, reusing the
+            // saved credentials: verify the token, (re)start the bot and
+            // verify this session's topic (recreated when deleted).
+            const savedToken = loadConfig().telegramBotToken || readTokenFile(tokenFile);
+            if (!savedToken) {
+              console.log(`[telegram] no token saved — connect with /telegram <bot-token> first.`);
+              return;
+            }
+            const savedGroupID = loadBotState(stateFile).groupID;
+            const who = await verifyToken(savedToken, fetchImpl);
+            if (!who) {
+              console.log(
+                `[telegram] saved token rejected by Telegram (bad token or no network). ` +
+                  `Reconnect with /telegram <bot-token>.`,
+              );
+              return;
+            }
+            saveBotState(stateFile, {
+              stopped: false,
+              ...(savedGroupID !== undefined ? { groupID: savedGroupID } : {}),
+            });
+            console.log(
+              `[telegram] reconnected as @${who} (${maskToken(savedToken)})` +
+                (savedGroupID !== undefined
+                  ? `, group ${savedGroupID} registered — one topic per session.`
+                  : ` (no group registered — add one with /telegram group <group-id>).`),
+            );
+            if (onToken) {
+              try {
+                await onToken(savedToken, savedGroupID);
+                console.log(
+                  savedGroupID !== undefined
+                    ? `[telegram] bot connected and group ${savedGroupID} registered.`
+                    : allowedUsers.length > 0
+                      ? `[telegram] bot connected — project picker DM'd to allowed chats; ` +
+                          `otherwise message @${who} with /start (or /menu).`
+                      : `[telegram] bot connected, but TELEGRAM_ALLOWED_USERS is empty — every user is denied. ` +
+                          `Set it in the environment that launches OpenCode, then restart.`,
+                );
+              } catch (err) {
+                console.log(`[telegram] bot failed to start: ${err instanceof Error ? err.message : String(err)}`);
+              }
+              if (savedGroupID !== undefined) await linkSessionTopic(sessionID, true);
+            } else {
+              console.log(`[telegram] restart OpenCode to connect with the saved token.`);
+            }
             return;
           }
           if (!arg || /^status$/i.test(head)) {
@@ -266,7 +323,7 @@ export async function setupTelegramCommand(
           }
           console.log(
             `[telegram] usage: /telegram | /telegram <bot-token> [group-id] | /telegram group <group-id> | ` +
-              `/telegram <chat-id> | /telegram unlink [chat-id] | /telegram on|off|stop|start|talk|shut`,
+              `/telegram sync | /telegram <chat-id> | /telegram unlink [chat-id] | /telegram on|off|stop|start|talk|shut`,
           );
         },
       });

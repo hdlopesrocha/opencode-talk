@@ -25,6 +25,7 @@ export const TALK_CATALOGUE = [
   "/telegram — status + this session's group topic; /telegram status|help|<chat-id>|unlink|on|off|stop|start|talk|shut",
   "/telegram <bot-token> — verify, save locked-down, connect the bot (no group)",
   "/telegram group <group-id> — connect the group (one topic per session); /telegram <bot-token> <group-id> does both",
+  "/telegram sync — reconnect with the saved token + group (same as repeating the setup above)",
   "/xmpp — status + this session's MUC thread; /xmpp status|help|<contact-jid>|unlink|on|off|stop|start|talk|shut",
   "/xmpp <password> — save password (JID from XMPP_JID env/file), connect the bot",
   "/xmpp <jid> <password> [muc-room] — save credentials, connect the bot + room",

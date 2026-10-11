@@ -885,9 +885,16 @@ export class PluginTelegramBot {
           await target.sendRaw("Usage: /use <number|session-id>\nSee /sessions for the list.");
           break;
         }
-        const sessions = await this.listKnownSessions();
+        // Numbers are positional in the scoped /sessions list, so resolve
+        // against the project scope first. Explicit ids/titles fall back to
+        // the full list so sessions outside the scope stay selectable.
+        const scope = this.chatProjects.get(target.key);
+        const sessions = await this.listKnownSessions(scope);
         this.lastList.set(target.key, sessions);
-        const picked = resolveSession(arg, sessions, this.lastList.get(target.key));
+        let picked = resolveSession(arg, sessions, this.lastList.get(target.key));
+        if (!picked && scope && !/^\d+$/.test(arg.trim())) {
+          picked = resolveSession(arg, await this.listKnownSessions(), undefined);
+        }
         if (!picked) {
           await target.sendRaw(`⚠️ No session matches "${arg}". See /sessions.`);
           break;

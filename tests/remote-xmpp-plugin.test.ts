@@ -225,6 +225,38 @@ describe("PluginXmppBot incoming", () => {
     }
   });
 
+  it("/use <number> resolves against the /project scope", async () => {
+    const dir = tmpDir();
+    try {
+      const { api } = makeApi();
+      const sessions = [summary("ses_1", "/p/alpha"), summary("ses_2", "/p/alpha"), summary("ses_3", "/p/beta")];
+      const { ctx } = makeCtx(sessions);
+      const mapping = new SessionMapping(join(dir, "mapping.json"));
+      mapping.set("seed1@example.com", "ses_1");
+      mapping.set("seed2@example.com", "ses_2");
+      mapping.set("seed3@example.com", "ses_3");
+      const bot = new PluginXmppBot(ctx, {
+        api,
+        mapping,
+        keys: new SessionKeyStore(join(dir, "keys.json")),
+        peers: new PeerStore(join(dir, "peers.json")),
+        allowedUsers: new Set(["friend@example.com"]),
+        projects: ["/p/alpha", "/p/beta"],
+        chatProjects: new ChatProjectStore(join(dir, "chat-projects.json")),
+      });
+      await bot.handleMessage({ from: "friend@example.com", body: "/project 2" });
+      await bot.handleMessage({ from: "friend@example.com", body: "/use 1" });
+      // /project 2 selects beta (only ses_3), so /use 1 must pick ses_3.
+      expect(mapping.get("friend@example.com")).toBe("ses_3");
+      await bot.handleMessage({ from: "friend@example.com", body: "/use ses_1" });
+      // Explicit ids still work outside the scope; bare numbers never fall back.
+      expect(mapping.get("friend@example.com")).toBe("ses_1");
+      bot.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("routes MUC thread messages to the bound session and replies in-thread", async () => {
     const dir = tmpDir();
     try {

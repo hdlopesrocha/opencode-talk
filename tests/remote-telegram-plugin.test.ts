@@ -891,6 +891,51 @@ describe("PluginTelegramBot /projects", () => {
     }
   });
 
+  it("/use <number> resolves against the /project scope", async () => {
+    const dir = tmpDir();
+    try {
+      const { bot, mapping, sent } = menuBotWithSessions(dir, [
+        update(1, 111, 111, "/project 2"),
+        update(2, 111, 111, "/use 1"),
+      ]);
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(120);
+      abort.abort();
+      bot.stop();
+      // /project 2 selects beta (only ses_3), so /use 1 must pick ses_3 —
+      // not ses_1, the first session of the unscoped list.
+      expect(mapping.get(111)).toBe("ses_3");
+      const texts = sent.map((c) => String(c.params["text"] ?? ""));
+      expect(texts.some((t) => t.includes("title-ses_3"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("/use falls back to explicit ids outside the /project scope", async () => {
+    const dir = tmpDir();
+    try {
+      const { bot, mapping, sent } = menuBotWithSessions(dir, [
+        update(1, 111, 111, "/project 2"),
+        update(2, 111, 111, "/use ses_1"),
+        update(3, 111, 111, "/use 5"),
+      ]);
+      const abort = new AbortController();
+      void bot.start(abort.signal);
+      await tick(150);
+      abort.abort();
+      bot.stop();
+      // Explicit id works even though ses_1 is outside the beta scope...
+      expect(mapping.get(111)).toBe("ses_1");
+      // ...but a bare number never falls back to the unscoped list.
+      const texts = sent.map((c) => String(c.params["text"] ?? ""));
+      expect(texts.some((t) => t.includes('No session matches "5"'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("/projects includes OpenCode's own project list", async () => {
     const dir = tmpDir();
     try {

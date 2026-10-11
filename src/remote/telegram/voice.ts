@@ -185,7 +185,7 @@ function detectLanguage(text: string): "pt" | "en" | "fr" {
   if (/[ãõ]/.test(lower)) return "pt";
   if (/\b(the|and|you|with|for|from|this|that|will|hello|thanks|please)\b/.test(lower)) return "en";
   if (/\b(le|la|les|vous|avec|pour|merci|bonjour)\b/.test(lower)) return "fr";
-  return "pt";
+  return "en"; // inconclusive: English is the default
 }
 
 /**

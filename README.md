@@ -242,12 +242,16 @@ The default engine is **edge-tts** — Microsoft's neural voices, which sound
 natural and include European Portuguese (`pt-PT-RaquelNeural`) and English
 (`en-US-AriaNeural`). It is wired in through the bundled wrapper
 `scripts/edge_tts_play.py`; if synthesis or playback ever fails it falls back to
-`spd-say`.
+`spd-say`. The wrapper also survives Microsoft's 2026 Read Aloud migration:
+when the legacy `speech.platform.bing.com` endpoint answers 403 (as it does in
+several regions), it retries on the new `api.msedgeservices.com` host, so the
+natural voice keeps working.
 
 **Language auto-detection:** each message is classified as Portuguese, English or
 French and the matching voice is used, so replies are read with the right voice.
-Set `OPENCODE_VOICE_TTS_AUTO=0` to disable it (then everything uses
-`OPENCODE_VOICE_TTS_VOICE`).
+Inconclusive text (numbers, very short replies) is read with the **English**
+voice. Set `OPENCODE_VOICE_TTS_AUTO=0` to disable detection (then everything
+uses `OPENCODE_VOICE_TTS_VOICE`).
 
 Because edge-tts uses an online service, it needs internet at speak time. For a
 completely offline voice, use Piper (below), or force the robotic fallback with
@@ -260,7 +264,7 @@ Configure with environment variables (set them before launching `opencode`, then
 | ------------------------------ | ---------------------- | ------------------------------------------------------------------ |
 | `OPENCODE_VOICE_TTS`           | `1`                    | Set to `0` to disable speech.                                      |
 | `OPENCODE_VOICE_TTS_ENGINE`    | auto (`command`)       | `command` (bundled edge-tts), `spd-say`, or your own command.      |
-| `OPENCODE_VOICE_TTS_AUTO`      | `1`                    | Auto-detect Portuguese/English and pick the matching voice.        |
+| `OPENCODE_VOICE_TTS_AUTO`      | `1`                    | Auto-detect PT/EN/FR and pick the matching voice (EN when unclear). |
 | `OPENCODE_VOICE_TTS_REASONING` | `0`                    | Set to `1` to also speak the agent's reasoning ("thinking") text.  |
 | `OPENCODE_VOICE_TTS_VOICE`     | `pt`                   | Portuguese voice: `pt`, `pt-br`, or a full edge voice name.        |
 | `OPENCODE_VOICE_TTS_VOICE_EN`  | `en-US-AriaNeural`     | Voice used for English messages.                                   |

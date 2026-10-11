@@ -4,6 +4,12 @@
 Falls back to spd-say if synthesis or playback fails, so speech never goes
 silent. Used by the opencode-voice plugin's `command` TTS engine.
 
+Microsoft is migrating Read Aloud to the api.msedgeservices.com host, which
+rejects the legacy speech.platform.bing.com endpoint with 403 in several
+regions while edge-tts still points at it. Synthesis therefore tries the new
+host first and retries on the legacy one, so the natural voice keeps working.
+English is the default voice.
+
 Environment:
   OPENCODE_VOICE_TTS_VOICE   language code (pt, pt-br, en, es, ...) or an
                              explicit edge voice name (e.g. pt-PT-RaquelNeural)
@@ -43,7 +49,7 @@ def choose_voice() -> str:
         mapped = DEFAULT_VOICES.get(value.lower()) or DEFAULT_VOICES.get(value.lower().split("-")[0])
         if mapped:
             return mapped
-    return "pt-PT-RaquelNeural"
+    return "en-US-AriaNeural"
 
 
 def rate() -> str:
@@ -72,15 +78,41 @@ def fallback(text: str) -> None:
     exe = shutil.which("spd-say")
     if not exe:
         return
-    voice = os.environ.get("OPENCODE_VOICE_TTS_VOICE") or "pt"
-    subprocess.run([exe, "-w", "-l", voice, "-e"], input=text.encode(), check=False)
+    # Speak with the same language as the edge voice that just failed
+    # (e.g. en-US-AriaNeural -> "en"); English when nothing is configured.
+    voice = choose_voice()
+    lang = voice.split("-", 1)[0] if "-" in voice else voice
+    subprocess.run([exe, "-w", "-l", lang or "en", "-e"], input=text.encode(), check=False)
 
 
 async def synth(text: str, path: str, voice: str, rate_value: str) -> None:
     import edge_tts
+    import edge_tts.communicate as communicate
+    from edge_tts.constants import TRUSTED_CLIENT_TOKEN
 
-    communicate = edge_tts.Communicate(text, voice, rate=rate_value)
-    await communicate.save(path)
+    # Edge 155 talks to api.msedgeservices.com; the legacy host increasingly
+    # answers 403 (see rany2/edge-tts#490). Try the new host first, then the
+    # library's own endpoint. Both accept the legacy Sec-MS-GEC token.
+    new_host = (
+        "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
+        f"?Ocp-Apim-Subscription-Key={TRUSTED_CLIENT_TOKEN}"
+    )
+    last_error = None
+    for endpoint in (new_host, None):
+        original = communicate.WSS_URL
+        if endpoint:
+            communicate.WSS_URL = endpoint
+        try:
+            communicator = edge_tts.Communicate(text, voice, rate=rate_value)
+            await communicator.save(path)
+            return
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+        finally:
+            communicate.WSS_URL = original
+    if last_error is None:
+        raise RuntimeError("edge-tts failed without an error")
+    raise last_error
 
 
 def main() -> int:

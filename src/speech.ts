@@ -11,8 +11,9 @@ import { node, platform } from "./node.js"
  *   - "command": any command that reads the text on stdin and plays audio, e.g.
  *                the bundled edge-tts wrapper (`scripts/edge_tts_play.py`).
  *
- * When `tts.auto` is on, the language is detected per message and an English or
- * Portuguese voice is used accordingly.
+ * When `tts.auto` is on, the language is detected per message and an English,
+ * Portuguese or French voice is used accordingly. English is the default when
+ * the text is inconclusive (numbers, very short replies).
  */
 
 interface SpeechState {
@@ -152,14 +153,15 @@ export function detectLanguage(text: string): DetectedLanguage | undefined {
 
   if (fr > pt && fr >= en) return "fr"
   if (en > pt && en >= fr) return "en"
-  return "pt"
+  if (pt > en && pt > fr) return "pt"
+  return "en" // inconclusive: English is the default
 }
 
 function pickVoice(cfg: VoiceConfig, text: string): { voice?: string; lang?: string } {
   if (!cfg.ttsAuto) {
     return { voice: cfg.ttsVoice, lang: cfg.ttsVoice }
   }
-  const lang = detectLanguage(text) ?? "pt"
+  const lang = detectLanguage(text) ?? "en"
   if (lang === "en") return { voice: cfg.ttsVoiceEn, lang }
   if (lang === "fr") return { voice: cfg.ttsVoiceFr, lang }
   return { voice: cfg.ttsVoice, lang: "pt" }

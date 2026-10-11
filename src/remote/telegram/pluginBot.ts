@@ -1449,8 +1449,13 @@ export class PluginTelegramBot {
    * group and bind it: mapping `${groupID}:${threadID}` -> session, project
    * scope seeded from the session directory, and a first message showing the
    * model + reasoning already selected. Returns a human-readable summary.
+   *
+   * The Bot API has no topic getter and sends no deletion notices, so a
+   * binding can outlive its topic. With `verify`, a reused topic is probed
+   * with the intro message itself: a deleted topic fails and is recreated,
+   * any other outcome keeps the binding untouched.
    */
-  async linkSession(sessionID: string): Promise<string> {
+  async linkSession(sessionID: string, opts?: { verify?: boolean }): Promise<string> {
     return this.withTopicLock(async () => {
       if (this.groupID === undefined) {
         throw new Error("no group registered — run /telegram <bot-token> <group-id>");
@@ -1463,6 +1468,25 @@ export class PluginTelegramBot {
         threadID = parseChatKey(existing).threadId;
         reused = threadID !== undefined;
       }
+      const modelLine = s.model
+        ? `${s.model.providerID}/${s.model.id}${s.model.variant ? ` (reasoning: ${s.model.variant})` : ""}`
+        : "not selected yet — /model <number|provider/model> [effort]";
+      const projectLine = s.directory ? `${projectName(s.directory)} (${s.directory})` : "(none)";
+      if (reused && opts?.verify && threadID !== undefined) {
+        try {
+          await this.sendTopicIntro(threadID, s.title, projectLine, modelLine);
+        } catch (err) {
+          if (!isDeadThread(err)) {
+            // Transient/rights failure: keep the existing binding.
+            return this.linkSummary(threadID, true, sessionID, projectLine, modelLine);
+          }
+          this.mapping.clear(`${this.groupID}:${threadID}`);
+          this.live.delete(`${this.groupID}:${threadID}`);
+          this.topicSessionTitles.delete(`${this.groupID}:${threadID}`);
+          threadID = undefined;
+          reused = false;
+        }
+      }
       if (threadID === undefined) {
         threadID = await this.api.createForumTopic(this.groupID, s.title || sessionID);
       }
@@ -1471,26 +1495,42 @@ export class PluginTelegramBot {
       this.topicSessionTitles.set(key, s.title || sessionID);
       this.knownSessions.add(sessionID);
       if (s.directory) this.chatProjects.set(key, s.directory);
-      const modelLine = s.model
-        ? `${s.model.providerID}/${s.model.id}${s.model.variant ? ` (reasoning: ${s.model.variant})` : ""}`
-        : "not selected yet — /model <number|provider/model> [effort]";
-      const projectLine = s.directory ? `${projectName(s.directory)} (${s.directory})` : "(none)";
       if (!reused) {
-        await this.api.sendMarkdown(
-          this.groupID,
-          `✅ Linked to session "${s.title}"\n` +
-            `Project: ${projectLine}\n` +
-            `Model: ${modelLine} — already selected\n\n` +
-            `Write here to prompt this session. /models /model /status /abort /nostr work here too.\n\n` +
-            `GitHub: ${GITHUB_PROFILE}`,
-          threadID,
-        );
+        await this.sendTopicIntro(threadID, s.title, projectLine, modelLine);
       }
-      return (
-        `topic ${threadID} in group ${this.groupID} ${reused ? "already linked" : "created and linked"} ` +
-        `to session ${sessionID} (project: ${projectLine}, model: ${modelLine}).`
-      );
+      return this.linkSummary(threadID, reused, sessionID, projectLine, modelLine);
     });
+  }
+
+  /** First message posted in a (new or re-verified) session topic. */
+  private async sendTopicIntro(
+    threadID: number,
+    title: string,
+    projectLine: string,
+    modelLine: string,
+  ): Promise<void> {
+    await this.api.sendMarkdown(
+      this.groupID!,
+      `✅ Linked to session "${title}"\n` +
+        `Project: ${projectLine}\n` +
+        `Model: ${modelLine} — already selected\n\n` +
+        `Write here to prompt this session. /models /model /status /abort /nostr work here too.\n\n` +
+        `GitHub: ${GITHUB_PROFILE}`,
+      threadID,
+    );
+  }
+
+  private linkSummary(
+    threadID: number,
+    reused: boolean,
+    sessionID: string,
+    projectLine: string,
+    modelLine: string,
+  ): string {
+    return (
+      `topic ${threadID} in group ${this.groupID} ${reused ? "already linked" : "created and linked"} ` +
+      `to session ${sessionID} (project: ${projectLine}, model: ${modelLine}).`
+    );
   }
 
   // --- outgoing ----------------------------------------------------------
@@ -1905,8 +1945,11 @@ export interface PluginTelegramBotHandle {
   stop(): void;
   /** DM a chat the project picker (post-connect invite). */
   invite(chatId: number): Promise<void>;
-  /** Create/reuse the session's topic in the registered group; summary string. */
-  linkSession(sessionID: string): Promise<string>;
+  /**
+   * Create/reuse the session's topic in the registered group; summary string.
+   * With `verify`, a reused topic is probed (recreated when deleted).
+   */
+  linkSession(sessionID: string, opts?: { verify?: boolean }): Promise<string>;
   /** Mirror a locally submitted prompt into every chat bound to the session. */
   mirrorPrompt(sessionID: string, text: string): Promise<void>;
 }
@@ -1974,7 +2017,7 @@ export async function setupPluginTelegramBot(
     return {
       stop: () => {},
       invite: (chatId: number) => bot.inviteToProjects(chatId),
-      linkSession: (sessionID: string) => bot.linkSession(sessionID),
+      linkSession: (sessionID: string, opts?: { verify?: boolean }) => bot.linkSession(sessionID, opts),
       mirrorPrompt: (sessionID: string, text: string) => bot.mirrorPrompt(sessionID, text),
     };
   }
@@ -1992,7 +2035,7 @@ export async function setupPluginTelegramBot(
       bot.stop();
     },
     invite: (chatId: number) => bot.inviteToProjects(chatId),
-    linkSession: (sessionID: string) => bot.linkSession(sessionID),
+    linkSession: (sessionID: string, opts?: { verify?: boolean }) => bot.linkSession(sessionID, opts),
     mirrorPrompt: (sessionID: string, text: string) => bot.mirrorPrompt(sessionID, text),
   };
 }

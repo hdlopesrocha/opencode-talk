@@ -294,7 +294,8 @@ export default Plugin.define({
           }
         },
         onControl: telegramControl,
-        onLinkSession: (sessionID: string) => runtime.telegramLinkSession(sessionID),
+        onLinkSession: (sessionID: string, opts?: { verify?: boolean }) =>
+          runtime.telegramLinkSession(sessionID, opts),
       });
     } catch (err) {
       console.error(`[telegram-bridge] Telegram command failed to start: ${String(err)}`);

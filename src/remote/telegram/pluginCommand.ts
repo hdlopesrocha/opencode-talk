@@ -21,7 +21,7 @@ export interface TelegramCommandOverrides {
   /** Bot lifecycle + talk switch. Returns a human-readable result line. */
   onControl?: (action: TelegramControlAction) => Promise<string>;
   /** Create/reuse this session's topic in the registered group (undefined = no bot). */
-  onLinkSession?: (sessionID: string) => Promise<string | undefined>;
+  onLinkSession?: (sessionID: string, opts?: { verify?: boolean }) => Promise<string | undefined>;
 }
 
 /** Strip a leading `/telegram` command prefix, returning the args (if any). */
@@ -61,11 +61,12 @@ export async function setupTelegramCommand(
   const onControl = overrides.onControl;
   const onLinkSession = overrides.onLinkSession;
 
-  /** Ensure this session's group topic; never throws. */
-  const linkSessionTopic = async (sessionID: string): Promise<void> => {
+  /** Ensure this session's group topic; never throws. Setup flows verify
+   * (recreate when deleted), bare /telegram reuses silently. */
+  const linkSessionTopic = async (sessionID: string, verify = false): Promise<void> => {
     if (!onLinkSession) return;
     try {
-      const result = await onLinkSession(sessionID);
+      const result = await onLinkSession(sessionID, verify ? { verify: true } : undefined);
       console.log(
         result
           ? `[telegram] ${result}`
@@ -137,7 +138,7 @@ export async function setupTelegramCommand(
                 console.log(`[telegram] could not (re)start the bot: ${err instanceof Error ? err.message : String(err)}`);
               }
             }
-            await linkSessionTopic(sessionID);
+            await linkSessionTopic(sessionID, true);
             return;
           }
           if (!arg || /^status$/i.test(head)) {
@@ -216,7 +217,7 @@ export async function setupTelegramCommand(
               } catch (err) {
                 console.log(`[telegram] bot failed to start: ${err instanceof Error ? err.message : String(err)}`);
               }
-              if (groupID !== undefined) await linkSessionTopic(sessionID);
+              if (groupID !== undefined) await linkSessionTopic(sessionID, true);
             } else {
               console.log(`[telegram] restart OpenCode to connect with the saved token.`);
             }

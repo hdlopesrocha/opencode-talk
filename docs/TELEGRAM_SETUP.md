@@ -192,8 +192,10 @@ Notes:
 - Group mode needs the plugin-native bot (it creates topics through the same
   polling loop); the standalone `dev:bot` process ignores topic mappings.
 - `TELEGRAM_ALLOWED_USERS` must contain your user id (group member).
-- Deleting a topic in Telegram leaves its mapping until you `/telegram
-  unlink <group:topic>` or pick another session in that topic.
+- Deleting a topic in Telegram auto-unlinks it on the next send to that
+  topic; re-running `/telegram <bot-token> <group-id>` (or
+  `/telegram group <group-id>`) recreates the missing topic, while bare
+  `/telegram` reuses the live one silently.
 
 Nostr pairing needs the Nostr adapter running too (`npm run dev:nostr`) —
 see [docs/NOSTR_SETUP.md](NOSTR_SETUP.md).

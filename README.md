@@ -237,7 +237,7 @@ Changes apply immediately — the plugin re-reads `voice.json` on every use.
 
 The plugin also reads the **main agent's** messages aloud:
 
-- **Only the main agent** — messages from subagent/child sessions are never spoken.
+- **Root sessions only** — correctly parented subagent/child sessions stay silent by default. API-created automation without `parentID` is a root session and is narrated normally; callers creating children must supply `parentID`. Failed or unknown/malformed session lookups (including wrapped responses or mismatched session IDs) are skipped before speech ownership is claimed, for both streaming and completed speech.
 - **Only assistant prose** — tool calls and shell/command output are not spoken. Code blocks, inline code, URLs and Markdown markup are stripped first so it reads like speech.
 - **Reasoning is opt-in** — the agent's grey "thinking" text is skipped unless you enable it with `OPENCODE_VOICE_TTS_REASONING=1` (or the settings menu). Off by default.
 - Runs in the **server** plugin, so it works in every client (TUI, desktop, web).
@@ -268,6 +268,7 @@ Configure with environment variables (set them before launching `opencode`, then
 | Variable                       | Default                | Purpose                                                            |
 | ------------------------------ | ---------------------- | ------------------------------------------------------------------ |
 | `OPENCODE_VOICE_TTS`           | `1`                    | Set to `0` to disable speech.                                      |
+| `OPENCODE_VOICE_TTS_STREAMING` | `0`                    | Stream live text to a compatible stdin command (opt-in).          |
 | `OPENCODE_VOICE_TTS_ENGINE`    | auto (`command`)       | `command` (bundled edge-tts), `spd-say`, or your own command.      |
 | `OPENCODE_VOICE_TTS_AUTO`      | `1`                    | Auto-detect PT/EN/FR and pick the matching voice (EN when unclear). |
 | `OPENCODE_VOICE_TTS_REASONING` | `0`                    | Set to `1` to also speak the agent's reasoning ("thinking") text.  |
@@ -287,6 +288,61 @@ Voice mapping: `pt` → `pt-PT-RaquelNeural`, `pt-br` → `pt-BR-FranciscaNeural
 OPENCODE_VOICE_TTS_VOICE=pt-PT-DuarteNeural      # male European Portuguese
 OPENCODE_VOICE_TTS_VOICE_EN=en-GB-SoniaNeural    # British English
 ```
+
+### Streaming speech (opt-in)
+
+If your TTS command accepts incremental UTF-8 text on stdin and plays audio
+before stdin closes, enable `ttsStreaming` in `~/.config/opencode/voice.json`:
+
+```json
+{
+  "tts": true,
+  "ttsEngine": "command",
+  "ttsCommand": "my-streaming-tts-command",
+  "ttsStreaming": true,
+  "ttsMaxChars": 1500
+}
+```
+
+The plugin forwards `session.text.delta` events instead of waiting for
+`session.text.ended`. It holds incomplete words, code, links, and Markdown
+markers back; the final text event flushes the tail without repeating words
+already sent. Each text part uses one queued child process. Stopping speech
+invalidates queued streams and terminates the active process group.
+
+`ttsMaxChars` counts Unicode codepoints and is respected without splitting a word
+(`0` disables the limit). Truncation is reported explicitly.
+`ttsTimeoutMs` (or `OPENCODE_VOICE_TTS_TIMEOUT_MS`) defaults to 900000 (15 minutes)
+and limits each streaming receiver's total lifetime from spawn, including input
+and playback. Increase it for longer narration. Lock acquisition has a separate
+wait bound of at most five minutes (or the configured timeout, with a one-second
+minimum); it never steals a live owner's lock merely because it is old.
+
+Streaming keeps at most 16,384 UTF-16 code units per unresolved word/link label, 256 KiB of pending
+UTF-8 input per receiver (including Node's writable buffer), and 64 queued/active
+receivers per process. Oversized constructs, queue overflow, premature exits,
+stdin errors, and timeouts produce sanitized warnings and cancel the affected
+job rather than silently dropping a tail or retrying ambiguous playback.
+Cancellation escalates from SIGTERM to SIGKILL after 250 ms on Unix.
+
+Text-ended closes stdin but retains job ownership until playback finishes.
+Session failure cancels that session's jobs; pause/off/microphone commands remain
+global. Unloading/reloading a plugin cancels its own jobs and retains dedupe
+tombstones: cancelled narration is never replayed or resumed. A final snapshot
+must match the consumed delta prefix; only its missing suffix is appended.
+Streaming punctuation cannot retract whitespace already sent to the receiver.
+
+Reasoning remains opt-in and is narrated only after its part ends. The command
+receives the selected voice in `OPENCODE_VOICE_EDGE_VOICE` and its queue timestamp
+in `OPENCODE_TTS_QUEUED_AT_MS` (Unix milliseconds), which an external stop helper
+can use to reject jobs queued before a global stop.
+
+This adds no provider dependency or API keys to the plugin. Commands using a
+`{text}` placeholder are not compatible; they must read stdin. A command that
+waits for EOF (including the bundled edge-tts wrapper) still waits for the full
+text part, even with this option enabled. Speech Dispatcher continues using
+the completed-text path. With the default `ttsStreaming: false`, behavior is
+unchanged.
 
 ### Sound commands
 

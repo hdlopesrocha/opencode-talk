@@ -3,7 +3,7 @@ import { resolveConfig } from "./src/config.js"
 import { saveConfigFile } from "./src/configfile.js"
 import { MIC_HELP, SOUND_HELP } from "./src/help.js"
 import { startRecording, type Recording } from "./src/recorder.js"
-import { claimOnce, isSpeakerOwner, speak, stopSpeaking } from "./src/speech.js"
+import { claimOnce, isSpeakerOwner, speak, stopSpeaking, streamSpeech, StreamingText } from "./src/speech.js"
 import { transcribe } from "./src/transcribe.js"
 
 /** `/mic <arg>` subcommands. */
@@ -38,6 +38,41 @@ export default Plugin.define({
     let starting = false
     let timer: ReturnType<typeof setTimeout> | undefined
     let target: { sessionID: string; prompt: Record<string, unknown>; delivery: "steer" | "queue" } | undefined
+    let disposed = false
+    let epoch = 0
+    const pendingClaims = new Map<string, string>()
+    const globalScope = globalThis as Record<symbol, unknown>
+    const spokenKey = Symbol.for("opencode.voice.spokenEvents")
+    if (!globalScope[spokenKey]) globalScope[spokenKey] = new Set<string>()
+    const spoken = globalScope[spokenKey] as Set<string>
+    function remember(key: string) {
+      spoken.add(key)
+      if (spoken.size > 2000) spoken.delete(spoken.values().next().value!)
+    }
+    const controlsKey = Symbol.for("opencode.voice.streamControls")
+    if (!globalScope[controlsKey]) globalScope[controlsKey] = new Set<(sessionID?: string) => void>()
+    const controls = globalScope[controlsKey] as Set<(sessionID?: string) => void>
+    const streams = new Map<string, { sessionID: string; text: StreamingText; ended?: boolean; speech?: ReturnType<typeof streamSpeech> }>()
+    const completedJobs = new Map<AbortController, string>()
+    function cancelStreams(sessionID?: string) {
+      if (!sessionID) epoch++
+      for (const [key, session] of pendingClaims) {
+        if (!sessionID || session === sessionID) remember(key)
+      }
+      for (const [key, stream] of streams) {
+        if (sessionID && stream.sessionID !== sessionID) continue
+        stream.speech?.cancel()
+        streams.delete(key)
+      }
+      for (const [controller, session] of completedJobs) {
+        if (!sessionID || session === sessionID) controller.abort()
+      }
+    }
+    function silence() {
+      for (const cancel of controls) cancel()
+      stopSpeaking()
+    }
+    controls.add(cancelStreams)
 
     async function finish() {
       refresh()
@@ -70,7 +105,7 @@ export default Plugin.define({
     async function start(sessionID: string, prompt: Record<string, unknown>, delivery: "steer" | "queue") {
       if (starting || recording) return
       refresh()
-      stopSpeaking() // silence any ongoing TTS before recording
+      silence() // silence any ongoing TTS before recording
       starting = true
       try {
         recording = await startRecording({ recorder: cfg.recorder, sampleRate: cfg.sampleRate })
@@ -161,18 +196,18 @@ export default Plugin.define({
             return
           }
           if (TTS_PAUSE_WORDS.has(arg)) {
-            stopSpeaking()
+            silence()
             return
           }
           if (TTS_OFF_WORDS.has(arg)) {
-            stopSpeaking()
+            silence()
             saveConfigFile({ tts: false })
             refresh()
             return
           }
           refresh()
           const next = !cfg.tts
-          if (!next) stopSpeaking()
+          if (!next) silence()
           saveConfigFile({ tts: next })
           refresh()
           if (next) void speak(cfg, "Voz ligada.")
@@ -185,47 +220,102 @@ export default Plugin.define({
     // Reasoning ("thinking") parts are spoken too, but only when `ttsReasoning`
     // is on (off by default). The server can instantiate the plugin once per
     // location, so dedupe events process-wide to speak each message exactly once.
-    const spokenKey = Symbol.for("opencode.voice.spokenEvents")
-    const globalScope = globalThis as Record<symbol, unknown>
-    if (!globalScope[spokenKey]) globalScope[spokenKey] = new Set<string>()
-    const spoken = globalScope[spokenKey] as Set<string>
 
     const speech = new AbortController()
     void (async () => {
       for await (const event of ctx.event.subscribe({ signal: speech.signal })) {
-        if (event.type !== "session.text.ended" && event.type !== "session.reasoning.ended") continue
-        const reasoning = event.type === "session.reasoning.ended"
-
-        const { sessionID, assistantMessageID, ordinal, text } = event.data
-        if (!text || !text.trim()) continue
-
-        refresh()
-        if (reasoning && !cfg.ttsReasoning) continue
-
-        const key = `${reasoning ? "reasoning" : "text"}:${sessionID}:${assistantMessageID}:${ordinal}`
-        if (spoken.has(key)) continue
-        spoken.add(key)
-        if (spoken.size > 2000) spoken.clear()
-
-        try {
-          const info = await ctx.session.get({ sessionID })
-          if (info.parentID) continue
-        } catch {
+        if (disposed) break
+        if (event.type === "session.execution.interrupted" || event.type === "session.execution.failed") {
+          for (const cancel of controls) cancel(event.data.sessionID)
           continue
         }
-
-        // Only one server process on this machine speaks; and each message once.
-        if (!(await isSpeakerOwner())) continue
-        if (!(await claimOnce(key))) continue
+        if (event.type !== "session.text.delta" && event.type !== "session.text.ended" && event.type !== "session.reasoning.ended") continue
+        const reasoning = event.type === "session.reasoning.ended"
+        const { sessionID, assistantMessageID, ordinal } = event.data
+        const key = `${reasoning ? "reasoning" : "text"}:${sessionID}:${assistantMessageID}:${ordinal}`
 
         refresh()
-        void speak(cfg, text)
+        if (!cfg.tts) {
+          silence()
+          remember(key)
+          continue
+        }
+        if (reasoning && !cfg.ttsReasoning) continue
+
+        const existing = streams.get(key)
+        if (existing?.ended) continue
+        const streaming = !!existing || (cfg.ttsStreaming && cfg.ttsEngine === "command")
+        if (!existing && spoken.has(key)) continue
+        if (event.type === "session.text.delta" && !streaming) continue
+
+        if (!existing) {
+          const claimedEpoch = epoch
+          pendingClaims.set(key, sessionID)
+          try {
+            const info = await ctx.session.get({ sessionID })
+            // Only flat, matching V2 session metadata can establish a root.
+            if (!info || typeof info !== "object" || Array.isArray(info) ||
+                typeof info.id !== "string" || !info.id || info.id !== sessionID ||
+                info.parentID !== undefined) continue
+            if (disposed || epoch !== claimedEpoch || spoken.has(key)) continue
+            if (!(await isSpeakerOwner())) continue
+            if (disposed || epoch !== claimedEpoch || spoken.has(key)) continue
+            if (!(await claimOnce(key))) continue
+            const cancelled = disposed || epoch !== claimedEpoch || spoken.has(key)
+            remember(key)
+            if (cancelled) continue
+          } catch {
+            continue
+          } finally {
+            pendingClaims.delete(key)
+          }
+        }
+
+        if (streaming && !reasoning) {
+          if (!existing && streams.size >= 64) {
+            console.warn("[voice] Streaming speech failed: more than 64 active text parts")
+            continue
+          }
+          const stream: { sessionID: string; text: StreamingText; ended?: boolean; speech?: ReturnType<typeof streamSpeech> } = existing ?? { sessionID, text: new StreamingText() }
+          streams.set(key, stream)
+          try {
+            const clean = event.type === "session.text.delta"
+              ? stream.text.append(event.data.delta)
+              : stream.text.finish(event.data.text)
+            if (clean) {
+              if (!stream.speech) {
+                stream.speech = streamSpeech(cfg)
+                void stream.speech.finished.finally(() => {
+                  if (streams.get(key) === stream) streams.delete(key)
+                })
+              }
+              stream.speech.write(clean)
+            }
+            if (event.type === "session.text.ended") {
+              stream.speech?.end()
+              stream.ended = true
+              if (!stream.speech) streams.delete(key)
+            }
+          } catch {
+            console.warn("[voice] Streaming text failed: invalid or oversized Markdown/final snapshot")
+            stream.speech?.cancel()
+            streams.delete(key)
+          }
+        } else if (event.type !== "session.text.delta") {
+          const controller = new AbortController()
+          completedJobs.set(controller, sessionID)
+          void Promise.resolve(speak(cfg, event.data.text, controller.signal)).finally(() => completedJobs.delete(controller))
+        }
       }
-    })().catch(() => {})
+    })().catch(() => {
+      if (!disposed) console.warn("[voice] Speech event subscription failed")
+    }).finally(() => cancelStreams())
 
     return () => {
+      disposed = true
       speech.abort()
-      stopSpeaking()
+      cancelStreams()
+      controls.delete(cancelStreams)
       if (timer) clearTimeout(timer)
       if (recording) void recording.abort()
     }

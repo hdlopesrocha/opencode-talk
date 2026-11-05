@@ -86,6 +86,9 @@ export interface VoiceConfig {
 
   /** Speak the main agent's messages aloud. */
   tts: boolean
+  /** Feed live text deltas to a streaming stdin command rather than waiting for text.ended. */
+  ttsStreaming: boolean
+  ttsTimeoutMs: number
   /** TTS engine: "spd-say" (speech-dispatcher) or "command". */
   ttsEngine: "spd-say" | "command"
   /** Language/voice for spd-say (e.g. "pt"), or a synthesis voice name. */
@@ -268,6 +271,8 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): VoiceCo
     timeoutMs: Math.max(1000, asNum(o.timeoutMs, 60000)),
 
     tts: asBool(firstDefined(o.tts, env("OPENCODE_VOICE_TTS")), true),
+    ttsStreaming: asBool(firstDefined(o.ttsStreaming, env("OPENCODE_VOICE_TTS_STREAMING")), false),
+    ttsTimeoutMs: Math.max(1, asNum(firstDefined(o.ttsTimeoutMs, env("OPENCODE_VOICE_TTS_TIMEOUT_MS")), 900000)),
     ttsEngine,
     ttsVoice: firstDefined(
       asString(o.ttsVoice, undefined),
